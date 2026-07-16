@@ -7,6 +7,9 @@ final class LauncherUITests: XCTestCase {
         continueAfterFailure = false
         app = XCUIApplication()
         app.launchArguments = ["--ui-testing"]
+        if name.contains("testDarkAppearance") {
+            app.launchArguments.append("--ui-testing-dark")
+        }
         app.launch()
 
         XCTAssertTrue(
@@ -66,6 +69,19 @@ final class LauncherUITests: XCTestCase {
 
         let attachment = XCTAttachment(screenshot: app.screenshot())
         attachment.name = "Configurable hotkey settings"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    func testDarkAppearanceSupportsSearch() {
+        let search = app.textFields["launcher.search"]
+        search.click()
+        search.typeText("activity")
+
+        XCTAssertTrue(app.buttons["result.Activity Monitor"].waitForExistence(timeout: 3))
+
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = "Dark appearance"
         attachment.lifetime = .keepAlways
         add(attachment)
     }

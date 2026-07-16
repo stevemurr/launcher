@@ -7,7 +7,7 @@ struct LauncherRootView: View {
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
             VisualEffectView(material: .popover, blendingMode: .behindWindow)
-            Color(red: 0.94, green: 0.94, blue: 0.95).opacity(0.84)
+            Color.launcherSurface.opacity(0.84)
 
             Group {
                 switch model.screen {
@@ -29,7 +29,7 @@ struct LauncherRootView: View {
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(Color.black.opacity(0.13), lineWidth: 1)
+                .stroke(Color.launcherSeparator.opacity(0.82), lineWidth: 1)
         }
         .animation(.easeOut(duration: 0.12), value: model.isActionsPresented)
     }
@@ -78,7 +78,7 @@ private struct LauncherSearchView: View {
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(Color.secondary)
                     .frame(width: 28, height: 28)
-                    .background(Color.black.opacity(0.055), in: RoundedRectangle(cornerRadius: 7))
+                    .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 7))
             }
             .buttonStyle(.plain)
             .help("Launcher Settings (⌘,)")
@@ -86,7 +86,6 @@ private struct LauncherSearchView: View {
         }
         .padding(.leading, 16)
         .padding(.trailing, 14)
-        .background(Color.white.opacity(0.28))
     }
 
     private var resultsList: some View {
@@ -169,7 +168,7 @@ private struct LauncherSearchView: View {
             }
 
             Rectangle()
-                .fill(Color.black.opacity(0.12))
+                .fill(Color.launcherSeparator)
                 .frame(width: 1, height: 14)
 
             Button {
@@ -188,7 +187,7 @@ private struct LauncherSearchView: View {
             .accessibilityIdentifier("footer.actions")
         }
         .padding(.horizontal, 12)
-        .background(Color.white.opacity(0.20))
+        .background(Color.launcherControlSurface.opacity(0.20))
     }
 
     private func handle(_ command: LauncherKeyCommand) {
@@ -247,7 +246,7 @@ private struct ResultRow: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(isSelected ? Color.black.opacity(0.115) : Color.clear)
+                    .fill(isSelected ? Color.primary.opacity(0.10) : Color.clear)
             }
             .contentShape(Rectangle())
         }
@@ -324,7 +323,7 @@ private struct ActionsPalette: View {
                     .frame(height: 40)
                     .background {
                         RoundedRectangle(cornerRadius: 9, style: .continuous)
-                            .fill(index == 0 ? Color.black.opacity(0.095) : Color.clear)
+                            .fill(index == 0 ? Color.primary.opacity(0.085) : Color.clear)
                     }
                     .contentShape(Rectangle())
                 }
@@ -338,12 +337,12 @@ private struct ActionsPalette: View {
         .frame(width: 360, height: CGFloat(52 + model.availableActions.count * 40))
         .background {
             VisualEffectView(material: .popover, blendingMode: .withinWindow)
-                .overlay(Color.white.opacity(0.45))
+                .overlay(Color.launcherSurface.opacity(0.56))
         }
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(Color.black.opacity(0.16), lineWidth: 1)
+                .stroke(Color.launcherSeparator.opacity(0.9), lineWidth: 1)
         }
         .shadow(color: .black.opacity(0.24), radius: 20, y: 8)
     }
@@ -372,7 +371,7 @@ private struct LauncherSettingsView: View {
                     Image(systemName: "chevron.left")
                         .font(.system(size: 14, weight: .bold))
                         .frame(width: 28, height: 28)
-                        .background(Color.black.opacity(0.055), in: RoundedRectangle(cornerRadius: 7))
+                        .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 7))
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("settings.back")
@@ -387,7 +386,6 @@ private struct LauncherSettingsView: View {
             }
             .padding(.horizontal, 16)
             .frame(height: 59)
-            .background(Color.white.opacity(0.28))
 
             Divider().opacity(0.65)
 
@@ -401,7 +399,7 @@ private struct LauncherSettingsView: View {
                     HStack(spacing: 16) {
                         ZStack {
                             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .fill(Color.black.opacity(0.075))
+                                .fill(Color.primary.opacity(0.075))
                             Image(systemName: "command")
                                 .font(.system(size: 18, weight: .semibold))
                                 .foregroundStyle(Color.secondary)
@@ -424,10 +422,10 @@ private struct LauncherSettingsView: View {
                     .padding(14)
                     .frame(height: 74)
                 }
-                .background(Color.white.opacity(0.47), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                .background(Color.launcherControlSurface.opacity(0.62), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
                 .overlay {
                     RoundedRectangle(cornerRadius: 13, style: .continuous)
-                        .stroke(Color.black.opacity(0.08), lineWidth: 1)
+                        .stroke(Color.launcherSeparator.opacity(0.72), lineWidth: 1)
                 }
 
                 if let error = settings.hotKeyError {
@@ -454,10 +452,10 @@ private struct LauncherSettingsView: View {
                     Divider().padding(.leading, 14)
                     ShortcutReferenceRow(title: "Show actions", keys: ["⌘", "K"])
                 }
-                .background(Color.white.opacity(0.47), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                .background(Color.launcherControlSurface.opacity(0.62), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
                 .overlay {
                     RoundedRectangle(cornerRadius: 13, style: .continuous)
-                        .stroke(Color.black.opacity(0.08), lineWidth: 1)
+                        .stroke(Color.launcherSeparator.opacity(0.72), lineWidth: 1)
                 }
 
                 Spacer()
@@ -481,7 +479,7 @@ private struct LauncherSettingsView: View {
             }
             .padding(.horizontal, 16)
             .frame(height: 39)
-            .background(Color.white.opacity(0.20))
+            .background(Color.launcherControlSurface.opacity(0.20))
         }
     }
 }
@@ -517,10 +515,21 @@ private struct KeyCap: View {
             .foregroundStyle(Color.secondary)
             .padding(.horizontal, 6)
             .frame(minWidth: 23, minHeight: 22)
-            .background(Color.black.opacity(0.065), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .background(Color.primary.opacity(0.075), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .stroke(Color.black.opacity(0.08), lineWidth: 0.5)
+                    .stroke(Color.launcherSeparator.opacity(0.72), lineWidth: 0.5)
             }
     }
+}
+
+private extension Color {
+    static let launcherSurface = Color(nsColor: NSColor(name: "LauncherSurface") { appearance in
+        if appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua {
+            return NSColor(srgbRed: 0.105, green: 0.105, blue: 0.115, alpha: 1)
+        }
+        return NSColor(srgbRed: 0.94, green: 0.94, blue: 0.95, alpha: 1)
+    })
+    static let launcherControlSurface = Color(nsColor: .controlBackgroundColor)
+    static let launcherSeparator = Color(nsColor: .separatorColor)
 }

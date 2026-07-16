@@ -4,6 +4,8 @@ A keyboard-first macOS application launcher written in Swift and SwiftUI. It dis
 
 The default global shortcut is **Option-Space**. Open Launcher Settings with the gear button or Command-comma, click the shortcut recorder, and press any modified key combination to change it. The shortcut is persisted in `UserDefaults`.
 
+Launcher follows the current macOS light or dark appearance automatically.
+
 ## Build and run
 
 Requirements: macOS 14 or newer, Xcode 27, Swift 6, and [XcodeGen](https://github.com/yonaskolb/XcodeGen).

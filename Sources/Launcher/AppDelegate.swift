@@ -78,7 +78,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.hasShadow = true
         panel.hidesOnDeactivate = false
         panel.animationBehavior = .utilityWindow
-        panel.appearance = NSAppearance(named: .aqua)
+        if ProcessInfo.processInfo.arguments.contains("--ui-testing-dark") {
+            panel.appearance = NSAppearance(named: .darkAqua)
+        }
         panel.onCancel = { [weak model] in model?.handleEscape() }
 
         let rootView = LauncherRootView(model: model)
