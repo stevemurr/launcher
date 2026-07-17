@@ -13,6 +13,7 @@
 		2ECACD85B0177072B7F4FF3F /* LauncherView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78CA243E2DE30FA30AD048FA /* LauncherView.swift */; };
 		97E205D4EEC7B758428B8969 /* LauncherSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8F840D5367FE63FF4EAA995 /* LauncherSettings.swift */; };
 		A3E3543C17D485954CE5BB72 /* LauncherApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66D6E805E68A65282B70E574 /* LauncherApp.swift */; };
+		A3F2F7E5CD14A7BF2EBDF9F4 /* AppIcon.icns in Resources */ = {isa = PBXBuildFile; fileRef = 187433F6A367F18FCC448DDC /* AppIcon.icns */; };
 		A444BCC42154ECB459D1C83E /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = F98B7D65473A4DC5FBCD2992 /* AppDelegate.swift */; };
 		A8C8B95305F600C55D72FB68 /* VisualEffectView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 265DBA07B8910347D94016D1 /* VisualEffectView.swift */; };
 		B0E04C68AD4A1E6D81EDE12D /* SearchMatcherTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB1552D65C5E9701D5DBEDEA /* SearchMatcherTests.swift */; };
@@ -42,6 +43,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		187433F6A367F18FCC448DDC /* AppIcon.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = AppIcon.icns; sourceTree = "<group>"; };
 		265DBA07B8910347D94016D1 /* VisualEffectView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisualEffectView.swift; sourceTree = "<group>"; };
 		2DDD8EC1F69637F4635296DB /* Launcher.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Launcher.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		55A099A844B590130F3650B9 /* LauncherSearchField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherSearchField.swift; sourceTree = "<group>"; };
@@ -66,6 +68,7 @@
 		2C538A3FBBA28857E1C3B76B = {
 			isa = PBXGroup;
 			children = (
+				EAAE6501CDF1E24DF07A4A7E /* Resources */,
 				C48FD3147EF50C53E6B14FBB /* Sources */,
 				601B0246C1753D21833CE72C /* Tests */,
 				E1CCF1576335D8ACA35843F3 /* Products */,
@@ -157,6 +160,14 @@
 			path = ViewModels;
 			sourceTree = "<group>";
 		};
+		EAAE6501CDF1E24DF07A4A7E /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				187433F6A367F18FCC448DDC /* AppIcon.icns */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
 		EBF6E64FE8DD31E483D284B4 /* Models */ = {
 			isa = PBXGroup;
 			children = (
@@ -211,6 +222,7 @@
 			buildConfigurationList = 9326841A41DA4DB91FE20E68 /* Build configuration list for PBXNativeTarget "Launcher" */;
 			buildPhases = (
 				9F330B85037F2145AB79B845 /* Sources */,
+				F5897A57B7E91A053961C825 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -264,6 +276,17 @@
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		F5897A57B7E91A053961C825 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A3F2F7E5CD14A7BF2EBDF9F4 /* AppIcon.icns in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		416F0A723FCBDCA01DE72040 /* Sources */ = {

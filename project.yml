@@ -20,9 +20,12 @@ targets:
     platform: macOS
     sources:
       - path: Sources/Launcher
+      - path: Resources/AppIcon.icns
+        buildPhase: resources
     info:
       path: Resources/Info.plist
       properties:
+        CFBundleIconFile: AppIcon
         LSUIElement: true
         NSHighResolutionCapable: true
         NSHumanReadableCopyright: "Copyright © 2026. All rights reserved."
