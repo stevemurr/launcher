@@ -51,12 +51,15 @@ final class LauncherModel: ObservableObject {
     @Published var isActionsPresented = false
     @Published var isLoading = false
     @Published var focusToken = 0
+    @Published private(set) var launchAtLogin = false
+    @Published var launchAtLoginError: String?
 
     let settings: LauncherSettings
     var onRequestClose: (() -> Void)?
     var onHotKeyChange: ((HotKey) -> Bool)?
 
     private let isUITesting: Bool
+    private let loginItems: LoginItemService
     private var applications: [LauncherItem] = []
     private let launcherSettingsItem = LauncherItem(
         id: "launcher.settings",
@@ -64,12 +67,14 @@ final class LauncherModel: ObservableObject {
         subtitle: "General",
         kind: .launcherSetting,
         destination: .launcherSettings,
-        keywords: "preferences hotkey shortcut configure"
+        keywords: "preferences hotkey shortcut configure login startup"
     )
 
-    init(settings: LauncherSettings, isUITesting: Bool = false) {
+    init(settings: LauncherSettings, isUITesting: Bool = false, loginItems: LoginItemService? = nil) {
         self.settings = settings
         self.isUITesting = isUITesting
+        self.loginItems = loginItems ?? (isUITesting ? InMemoryLoginItemService() : AppLoginItemService())
+        launchAtLogin = self.loginItems.isEnabled
         refreshResults(resetSelection: true)
     }
 
@@ -195,6 +200,17 @@ final class LauncherModel: ObservableObject {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(fileURL.path, forType: .string)
         }
+    }
+
+    func setLaunchAtLogin(_ enabled: Bool) {
+        guard enabled != launchAtLogin else { return }
+        do {
+            try loginItems.setEnabled(enabled)
+            launchAtLoginError = nil
+        } catch {
+            launchAtLoginError = "Could not update the login item: \(error.localizedDescription)"
+        }
+        launchAtLogin = loginItems.isEnabled
     }
 
     func updateHotKey(_ hotKey: HotKey) {

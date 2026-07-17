@@ -73,6 +73,27 @@ final class LauncherUITests: XCTestCase {
         add(attachment)
     }
 
+    func testStartAtLoginCanBeToggledFromSettings() {
+        app.buttons["header.settings"].click()
+        XCTAssertTrue(app.staticTexts["settings.title"].waitForExistence(timeout: 2))
+
+        let toggle = app.checkBoxes["settings.startAtLogin"]
+        XCTAssertTrue(toggle.waitForExistence(timeout: 2))
+        XCTAssertEqual(toggle.value as? Int, 0)
+
+        toggle.click()
+        let enabled = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == 1"),
+            object: toggle
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [enabled], timeout: 3), .completed)
+
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = "Start at login toggle"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
     func testDarkAppearanceSupportsSearch() {
         let search = app.textFields["launcher.search"]
         search.click()

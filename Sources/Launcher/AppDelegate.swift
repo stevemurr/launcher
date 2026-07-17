@@ -63,7 +63,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func createPanel() {
         let panel = LauncherPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 774, height: 472),
+            contentRect: NSRect(x: 0, y: 0, width: 774, height: 512),
             styleMask: [.borderless, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -85,7 +85,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         let rootView = LauncherRootView(model: model)
         let hostingView = NSHostingView(rootView: rootView)
-        hostingView.frame = panel.contentView?.bounds ?? NSRect(x: 0, y: 0, width: 774, height: 472)
+        hostingView.frame = panel.contentView?.bounds ?? NSRect(x: 0, y: 0, width: 774, height: 512)
         hostingView.autoresizingMask = [.width, .height]
         panel.contentView = hostingView
         self.panel = panel

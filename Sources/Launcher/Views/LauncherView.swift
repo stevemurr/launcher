@@ -25,7 +25,7 @@ struct LauncherRootView: View {
                     .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .bottomTrailing)))
             }
         }
-        .frame(width: 774, height: 472)
+        .frame(width: 774, height: 512)
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
@@ -140,6 +140,8 @@ private struct LauncherSearchView: View {
             }
             .padding(.horizontal, 16)
             .frame(height: 44)
+
+            Spacer(minLength: 0)
         }
     }
 
@@ -421,6 +423,40 @@ private struct LauncherSettingsView: View {
                     }
                     .padding(14)
                     .frame(height: 74)
+
+                    Divider().padding(.leading, 70)
+
+                    HStack(spacing: 16) {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(Color.primary.opacity(0.075))
+                            Image(systemName: "power")
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundStyle(Color.secondary)
+                        }
+                        .frame(width: 40, height: 40)
+
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Start at login")
+                                .font(.system(size: 15, weight: .semibold))
+                            Text("Open Launcher automatically after you log in")
+                                .font(.system(size: 13))
+                                .foregroundStyle(Color.secondary)
+                        }
+
+                        Spacer()
+
+                        Toggle("Start at login", isOn: Binding(
+                            get: { model.launchAtLogin },
+                            set: { model.setLaunchAtLogin($0) }
+                        ))
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                        .accessibilityIdentifier("settings.startAtLogin")
+                    }
+                    .padding(14)
+                    .frame(height: 74)
                 }
                 .background(Color.launcherControlSurface.opacity(0.62), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
                 .overlay {
@@ -433,6 +469,11 @@ private struct LauncherSettingsView: View {
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(Color.red)
                         .accessibilityIdentifier("settings.hotkey.error")
+                } else if let error = model.launchAtLoginError {
+                    Label(error, systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Color.red)
+                        .accessibilityIdentifier("settings.startAtLogin.error")
                 } else {
                     Text("Click the shortcut, then press a new key combination.")
                         .font(.system(size: 12))

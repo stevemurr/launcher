@@ -16,7 +16,8 @@ let package = Package(
             path: "Sources/Launcher",
             linkerSettings: [
                 .linkedFramework("AppKit"),
-                .linkedFramework("Carbon")
+                .linkedFramework("Carbon"),
+                .linkedFramework("ServiceManagement")
             ]
         ),
         .testTarget(
