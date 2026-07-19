@@ -89,51 +89,60 @@ private struct LauncherSearchView: View {
     }
 
     private var resultsList: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("Results")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color.secondary)
-                Spacer()
-                if model.isLoading {
-                    ProgressView()
-                        .controlSize(.small)
-                        .accessibilityLabel("Indexing applications")
-                }
-            }
-            .padding(.horizontal, 16)
-            .frame(height: 36)
+        let rowOffset = model.calculation == nil ? 0 : 1
+        let rowCount = model.calculation == nil ? 6 : 4
+        let showsResultsSection = model.calculation == nil || model.results.count > 1
 
-            ForEach(0..<6, id: \.self) { index in
-                if model.results.indices.contains(index) {
-                    ResultRow(
-                        item: model.results[index],
-                        isSelected: index == model.selectedIndex,
-                        onSelect: { model.select(index: index) },
-                        onOpen: {
-                            model.select(index: index)
-                            model.activateSelected()
-                        }
-                    )
-                } else if index == 0, !model.isLoading {
-                    HStack(spacing: 8) {
-                        Image(systemName: "magnifyingglass")
-                        Text("No matching applications or settings")
+        return VStack(spacing: 0) {
+            if let calculation = model.calculation {
+                sectionHeader("Calculator", showsProgress: false)
+
+                CalculatorCard(
+                    calculation: calculation,
+                    isSelected: model.selectedIndex == 0,
+                    onSelect: { model.select(index: 0) },
+                    onOpen: {
+                        model.select(index: 0)
+                        model.activateSelected()
                     }
-                    .font(.system(size: 14))
-                    .foregroundStyle(Color.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    Color.clear
-                }
+                )
             }
-            .frame(height: 48)
+
+            if showsResultsSection {
+                sectionHeader("Results", showsProgress: model.isLoading)
+
+                ForEach(0..<rowCount, id: \.self) { index in
+                    let resultIndex = index + rowOffset
+                    if model.results.indices.contains(resultIndex) {
+                        ResultRow(
+                            item: model.results[resultIndex],
+                            isSelected: resultIndex == model.selectedIndex,
+                            onSelect: { model.select(index: resultIndex) },
+                            onOpen: {
+                                model.select(index: resultIndex)
+                                model.activateSelected()
+                            }
+                        )
+                    } else if index == 0, rowOffset == 0, !model.isLoading {
+                        HStack(spacing: 8) {
+                            Image(systemName: "magnifyingglass")
+                            Text("No matching applications or settings")
+                        }
+                        .font(.system(size: 14))
+                        .foregroundStyle(Color.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        Color.clear
+                    }
+                }
+                .frame(height: 48)
+            }
 
             HStack(spacing: 8) {
                 Image(systemName: model.isLoading ? "arrow.triangle.2.circlepath" : "sparkle.magnifyingglass")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Color.secondary.opacity(0.72))
-                Text(model.isLoading ? "Indexing installed applications…" : "Search installed applications and System Settings")
+                Text(model.isLoading ? "Indexing installed applications…" : "Search applications and System Settings, or type a calculation like 5+5")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(Color.secondary)
                 Spacer()
@@ -143,6 +152,22 @@ private struct LauncherSearchView: View {
 
             Spacer(minLength: 0)
         }
+    }
+
+    private func sectionHeader(_ title: String, showsProgress: Bool) -> some View {
+        HStack {
+            Text(title)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Color.secondary)
+            Spacer()
+            if showsProgress {
+                ProgressView()
+                    .controlSize(.small)
+                    .accessibilityLabel("Indexing applications")
+            }
+        }
+        .padding(.horizontal, 16)
+        .frame(height: 36)
     }
 
     private var footer: some View {
@@ -208,7 +233,72 @@ private struct LauncherSearchView: View {
         case .application: "Open Application"
         case .systemSetting: "Open System Settings"
         case .launcherSetting: "Open Launcher Settings"
+        case .calculator: "Copy Answer"
         }
+    }
+}
+
+private struct CalculatorCard: View {
+    let calculation: Calculation
+    let isSelected: Bool
+    let onSelect: () -> Void
+    let onOpen: () -> Void
+
+    var body: some View {
+        Button(action: onOpen) {
+            HStack(spacing: 0) {
+                column(value: calculation.expression, badge: calculation.operationLabel)
+                verticalDivider
+                Image(systemName: "arrow.right")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(Color.secondary)
+                    .frame(width: 44)
+                verticalDivider
+                column(value: calculation.formattedResult, badge: calculation.resultLabel)
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 96)
+            .background {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.primary.opacity(isSelected ? 0.10 : 0.05))
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 8)
+        .onHover { hovering in
+            if hovering { onSelect() }
+        }
+        .accessibilityIdentifier("calculator.card")
+        .accessibilityLabel("\(calculation.expression) equals \(calculation.formattedResult)")
+    }
+
+    private var verticalDivider: some View {
+        Rectangle()
+            .fill(Color.launcherSeparator.opacity(0.7))
+            .frame(width: 1)
+            .padding(.vertical, 12)
+    }
+
+    private func column(value: String, badge: String?) -> some View {
+        VStack(spacing: 9) {
+            Text(value)
+                .font(.system(size: 25, weight: .bold))
+                .foregroundStyle(Color.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.45)
+            if let badge {
+                Text(badge)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Color.secondary)
+                    .lineLimit(1)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+            }
+        }
+        .padding(.horizontal, 14)
+        .frame(maxWidth: .infinity)
     }
 }
 
@@ -355,6 +445,7 @@ private struct ActionsPalette: View {
         case .application: return "Open Application"
         case .systemSetting: return "Open System Settings"
         case .launcherSetting: return "Open Launcher Settings"
+        case .calculator: return "Copy Answer"
         case nil: return action.title
         }
     }

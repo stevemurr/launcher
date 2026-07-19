@@ -46,6 +46,7 @@ final class LauncherModel: ObservableObject {
         }
     }
     @Published private(set) var results: [LauncherItem] = []
+    @Published private(set) var calculation: Calculation?
     @Published var selectedIndex = 0
     @Published var screen: LauncherScreen = .search
     @Published var isActionsPresented = false
@@ -155,6 +156,10 @@ final class LauncherModel: ObservableObject {
         case let .url(url):
             NSWorkspace.shared.open(url)
             onRequestClose?()
+        case let .copyText(text):
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            onRequestClose?()
         }
     }
 
@@ -241,11 +246,13 @@ final class LauncherModel: ObservableObject {
         let allItems = [launcherSettingsItem] + applications + ApplicationCatalog.systemSettings
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
 
+        calculation = trimmedQuery.isEmpty ? nil : CalculatorEngine.evaluate(trimmedQuery)
+
         if trimmedQuery.isEmpty {
             let suggestedApplications = applications.prefix(5)
             results = [launcherSettingsItem] + suggestedApplications
         } else {
-            results = allItems
+            let matches = allItems
                 .compactMap { item -> (LauncherItem, Int)? in
                     guard let score = SearchMatcher.score(
                         query: trimmedQuery,
@@ -261,8 +268,22 @@ final class LauncherModel: ObservableObject {
                     }
                     return lhs.0.title.localizedStandardCompare(rhs.0.title) == .orderedAscending
                 }
-                .prefix(6)
+                .prefix(calculation == nil ? 6 : 4)
                 .map(\.0)
+
+            if let calculation {
+                let calculatorItem = LauncherItem(
+                    id: "calculator",
+                    title: calculation.expression,
+                    subtitle: calculation.formattedResult,
+                    kind: .calculator,
+                    destination: .copyText(calculation.formattedResult),
+                    keywords: ""
+                )
+                results = [calculatorItem] + matches
+            } else {
+                results = matches
+            }
         }
 
         if resetSelection || !results.indices.contains(selectedIndex) {

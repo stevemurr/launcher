@@ -42,6 +42,26 @@ final class LauncherUITests: XCTestCase {
         add(attachment)
     }
 
+    // Pressing Return on the calculator copies the answer and hides the panel.
+    // That behavior lives in unit tests (LauncherModelCalculatorTests): the
+    // hidden panel keeps its cached accessibility tree, and macOS pasteboard
+    // privacy blocks reading another app's clipboard, so neither dismissal nor
+    // the copied text is observable from a UI test.
+    func testCalculatorShowsAnswer() {
+        let search = app.textFields["launcher.search"]
+        search.click()
+        search.typeText("5+5")
+
+        let card = app.buttons["calculator.card"]
+        XCTAssertTrue(card.waitForExistence(timeout: 3))
+        XCTAssertTrue(card.label.contains("10"))
+
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = "Calculator result"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
     func testSystemSettingsAreSearchable() {
         let search = app.textFields["launcher.search"]
         search.click()

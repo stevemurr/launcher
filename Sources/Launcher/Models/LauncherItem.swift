@@ -4,12 +4,14 @@ enum LauncherItemKind: String, Equatable {
     case application = "Application"
     case systemSetting = "System Settings"
     case launcherSetting = "Launcher"
+    case calculator = "Calculator"
 
     var symbolName: String {
         switch self {
         case .application: "app"
         case .systemSetting: "gearshape.fill"
         case .launcherSetting: "slider.horizontal.3"
+        case .calculator: "equal"
         }
     }
 }
@@ -17,6 +19,7 @@ enum LauncherItemKind: String, Equatable {
 enum LauncherDestination: Equatable {
     case url(URL)
     case launcherSettings
+    case copyText(String)
 }
 
 struct LauncherItem: Identifiable, Equatable {
