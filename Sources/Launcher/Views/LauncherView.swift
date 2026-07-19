@@ -15,14 +15,31 @@ struct LauncherRootView: View {
                     LauncherSearchView(model: model)
                 case .settings:
                     LauncherSettingsView(model: model, settings: model.settings)
+                case .createScript:
+                    CreateScriptView(model: model)
                 }
             }
 
-            if model.screen == .search, model.isActionsPresented {
+            if model.screen == .search, model.isActionsPresented, model.pendingRun == nil {
                 ActionsPalette(model: model)
                     .padding(.trailing, 8)
                     .padding(.bottom, 45)
                     .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .bottomTrailing)))
+            }
+
+            if model.screen == .search, model.pendingRun != nil {
+                ConfirmRunPalette(model: model)
+                    .padding(.trailing, 8)
+                    .padding(.bottom, 45)
+                    .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .bottomTrailing)))
+            }
+
+            if model.screen == .search, model.isRunPalettePresented {
+                RunPalette(model: model)
+                    .padding(.leading, 8)
+                    .padding(.bottom, 45)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                    .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .bottomLeading)))
             }
         }
         .frame(width: 774, height: 512)
@@ -32,6 +49,8 @@ struct LauncherRootView: View {
                 .stroke(Color.launcherSeparator.opacity(0.82), lineWidth: 1)
         }
         .animation(.easeOut(duration: 0.12), value: model.isActionsPresented)
+        .animation(.easeOut(duration: 0.12), value: model.isRunPalettePresented)
+        .animation(.easeOut(duration: 0.12), value: model.pendingRun)
     }
 }
 
@@ -45,8 +64,14 @@ private struct LauncherSearchView: View {
 
             Divider().opacity(0.65)
 
-            resultsList
-                .frame(maxHeight: .infinity)
+            if model.isOutputExpanded {
+                ScriptOutputPanel(model: model)
+                    .padding(8)
+                    .frame(maxHeight: .infinity)
+            } else {
+                resultsList
+                    .frame(maxHeight: .infinity)
+            }
 
             Divider().opacity(0.65)
 
@@ -60,15 +85,25 @@ private struct LauncherSearchView: View {
             LauncherSearchField(
                 text: $model.query,
                 focusToken: model.focusToken,
+                isFocusTarget: model.focusTarget == .search,
+                onFocus: { model.noteFocus(.search) },
                 onCommand: handle
             )
             .frame(height: 32)
 
-            HStack(spacing: 5) {
-                Text("Hotkey")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(Color.secondary.opacity(0.72))
-                KeyCap(model.settings.hotKey.displayString)
+            if let script = model.selectedScript, !script.arguments.isEmpty {
+                HStack(spacing: 6) {
+                    ForEach(Array(script.arguments.enumerated()), id: \.offset) { index, argument in
+                        ArgumentTokenBox(model: model, argument: argument, index: index, onCommand: handle)
+                    }
+                }
+            } else {
+                HStack(spacing: 5) {
+                    Text("Hotkey")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(Color.secondary.opacity(0.72))
+                    KeyCap(model.settings.hotKey.displayString)
+                }
             }
 
             Button {
@@ -142,7 +177,7 @@ private struct LauncherSearchView: View {
                 Image(systemName: model.isLoading ? "arrow.triangle.2.circlepath" : "sparkle.magnifyingglass")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Color.secondary.opacity(0.72))
-                Text(model.isLoading ? "Indexing installed applications…" : "Search applications and System Settings, or type a calculation like 5+5")
+                Text(model.isLoading ? "Indexing installed applications…" : "Search apps, settings, and script commands, or type a calculation like 5+5")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(Color.secondary)
                 Spacer()
@@ -172,20 +207,43 @@ private struct LauncherSearchView: View {
 
     private var footer: some View {
         HStack(spacing: 10) {
-            Button {
-                model.showSettings()
-            } label: {
-                Image(systemName: "command.square.fill")
-                    .font(.system(size: 16, weight: .semibold))
-                    .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(Color.secondary.opacity(0.74))
-                    .frame(width: 26, height: 26)
+            if model.isRunChipVisible, model.scriptRun != nil {
+                RunChip(model: model)
+            } else {
+                Button {
+                    model.showSettings()
+                } label: {
+                    Image(systemName: "command.square.fill")
+                        .font(.system(size: 16, weight: .semibold))
+                        .symbolRenderingMode(.hierarchical)
+                        .foregroundStyle(Color.secondary.opacity(0.74))
+                        .frame(width: 26, height: 26)
+                }
+                .buttonStyle(.plain)
+                .help("Launcher Settings")
+                .accessibilityIdentifier("footer.settings")
             }
-            .buttonStyle(.plain)
-            .help("Launcher Settings")
-            .accessibilityIdentifier("footer.settings")
 
             Spacer()
+
+            if model.showMoreAvailable {
+                Button {
+                    model.toggleOutputExpanded()
+                } label: {
+                    HStack(spacing: 5) {
+                        Text(model.isOutputExpanded ? "Show Less" : "Show More")
+                            .font(.system(size: 13, weight: .semibold))
+                        KeyCap(model.isOutputExpanded ? "↑" : "↓")
+                    }
+                    .foregroundStyle(Color.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("footer.showMore")
+
+                Rectangle()
+                    .fill(Color.launcherSeparator)
+                    .frame(width: 1, height: 14)
+            }
 
             if let item = model.selectedItem {
                 Text(primaryActionTitle(for: item))
@@ -221,10 +279,14 @@ private struct LauncherSearchView: View {
         switch command {
         case .moveDown: model.moveSelection(by: 1)
         case .moveUp: model.moveSelection(by: -1)
-        case .submit: model.activateSelected()
+        case .submit: model.handleSubmit()
         case .escape: model.handleEscape()
         case .toggleActions: model.toggleActions()
         case .settings: model.showSettings()
+        case .focusNext: model.handleFocusNext()
+        case .focusPrevious: model.handleFocusPrevious()
+        case .toggleRunPalette: model.toggleRunPalette()
+        case .toggleOutput: model.toggleOutputExpanded()
         }
     }
 
@@ -232,8 +294,9 @@ private struct LauncherSearchView: View {
         switch item.kind {
         case .application: "Open Application"
         case .systemSetting: "Open System Settings"
-        case .launcherSetting: "Open Launcher Settings"
+        case .launcherSetting: item.destination == .createScript ? "Open Command" : "Open Launcher Settings"
         case .calculator: "Copy Answer"
+        case .scriptCommand: "Run Script"
         }
     }
 }
@@ -378,6 +441,9 @@ private struct ItemIcon: View {
         if item.kind == .systemSetting {
             return LinearGradient(colors: [.blue.opacity(0.72), .blue], startPoint: .top, endPoint: .bottom)
         }
+        if item.kind == .scriptCommand {
+            return LinearGradient(colors: [.orange.opacity(0.75), .orange], startPoint: .top, endPoint: .bottom)
+        }
         return LinearGradient(colors: [.gray, .black.opacity(0.82)], startPoint: .top, endPoint: .bottom)
     }
 }
@@ -444,8 +510,10 @@ private struct ActionsPalette: View {
         switch model.selectedItem?.kind {
         case .application: return "Open Application"
         case .systemSetting: return "Open System Settings"
-        case .launcherSetting: return "Open Launcher Settings"
+        case .launcherSetting:
+            return model.selectedItem?.destination == .createScript ? "Open Command" : "Open Launcher Settings"
         case .calculator: return "Copy Answer"
+        case .scriptCommand: return "Run Script"
         case nil: return action.title
         }
     }
@@ -548,6 +616,54 @@ private struct LauncherSettingsView: View {
                     }
                     .padding(14)
                     .frame(height: 74)
+
+                    Divider().padding(.leading, 70)
+
+                    HStack(spacing: 16) {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(Color.primary.opacity(0.075))
+                            Image(systemName: "folder")
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundStyle(Color.secondary)
+                        }
+                        .frame(width: 40, height: 40)
+
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Scripts folder")
+                                .font(.system(size: 15, weight: .semibold))
+                            Text((settings.scriptsDirectory.path as NSString).abbreviatingWithTildeInPath)
+                                .font(.system(size: 13))
+                                .foregroundStyle(Color.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+
+                        Spacer()
+
+                        Button("Reveal") {
+                            let directory = model.effectiveScriptsDirectory
+                            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                            NSWorkspace.shared.activateFileViewerSelecting([directory])
+                        }
+                        .controlSize(.small)
+                        .accessibilityIdentifier("settings.scriptsDir.reveal")
+
+                        Button("Change…") {
+                            let panel = NSOpenPanel()
+                            panel.canChooseDirectories = true
+                            panel.canChooseFiles = false
+                            panel.allowsMultipleSelection = false
+                            panel.directoryURL = settings.scriptsDirectory
+                            if panel.runModal() == .OK, let url = panel.url {
+                                model.updateScriptsDirectory(url)
+                            }
+                        }
+                        .controlSize(.small)
+                        .accessibilityIdentifier("settings.scriptsDir.change")
+                    }
+                    .padding(14)
+                    .frame(height: 74)
                 }
                 .background(Color.launcherControlSurface.opacity(0.62), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
                 .overlay {
@@ -634,7 +750,7 @@ private struct ShortcutReferenceRow: View {
     }
 }
 
-private struct KeyCap: View {
+struct KeyCap: View {
     let value: String
 
     init(_ value: String) {
@@ -655,7 +771,7 @@ private struct KeyCap: View {
     }
 }
 
-private extension Color {
+extension Color {
     static let launcherSurface = Color(nsColor: NSColor(name: "LauncherSurface") { appearance in
         if appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua {
             return NSColor(srgbRed: 0.105, green: 0.105, blue: 0.115, alpha: 1)

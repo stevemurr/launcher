@@ -8,11 +8,17 @@ enum LauncherKeyCommand {
     case escape
     case toggleActions
     case settings
+    case focusNext
+    case focusPrevious
+    case toggleRunPalette
+    case toggleOutput
 }
 
 struct LauncherSearchField: NSViewRepresentable {
     @Binding var text: String
     let focusToken: Int
+    var isFocusTarget = true
+    var onFocus: (() -> Void)?
     let onCommand: (LauncherKeyCommand) -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -23,6 +29,7 @@ struct LauncherSearchField: NSViewRepresentable {
         let field = KeyHandlingTextField()
         field.delegate = context.coordinator
         field.onCommand = onCommand
+        field.onFocus = onFocus
         field.isBordered = false
         field.isBezeled = false
         field.drawsBackground = false
@@ -40,10 +47,12 @@ struct LauncherSearchField: NSViewRepresentable {
     func updateNSView(_ field: KeyHandlingTextField, context: Context) {
         if field.stringValue != text { field.stringValue = text }
         field.onCommand = onCommand
+        field.onFocus = onFocus
         context.coordinator.parent = self
 
         guard context.coordinator.lastFocusToken != focusToken else { return }
         context.coordinator.lastFocusToken = focusToken
+        guard isFocusTarget else { return }
         DispatchQueue.main.async { [weak field] in
             guard let field, let window = field.window else { return }
             window.makeFirstResponder(field)
@@ -67,6 +76,13 @@ struct LauncherSearchField: NSViewRepresentable {
 
 final class KeyHandlingTextField: NSTextField {
     var onCommand: ((LauncherKeyCommand) -> Void)?
+    var onFocus: (() -> Void)?
+
+    override func becomeFirstResponder() -> Bool {
+        let became = super.becomeFirstResponder()
+        if became { onFocus?() }
+        return became
+    }
 
     override func keyDown(with event: NSEvent) {
         if handle(event) { return }
@@ -88,6 +104,14 @@ final class KeyHandlingTextField: NSTextField {
             onCommand?(.settings)
             return true
         }
+        if event.modifierFlags.contains(.command), characters == "t" {
+            onCommand?(.toggleRunPalette)
+            return true
+        }
+        if event.modifierFlags.contains(.command), characters == "o" {
+            onCommand?(.toggleOutput)
+            return true
+        }
 
         switch event.keyCode {
         case 125:
@@ -98,6 +122,8 @@ final class KeyHandlingTextField: NSTextField {
             onCommand?(.submit)
         case 53:
             onCommand?(.escape)
+        case 48:
+            onCommand?(event.modifierFlags.contains(.shift) ? .focusPrevious : .focusNext)
         default:
             return false
         }

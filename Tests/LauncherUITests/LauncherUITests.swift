@@ -62,6 +62,54 @@ final class LauncherUITests: XCTestCase {
         add(attachment)
     }
 
+    // Keyboard-driven on purpose: moving the mouse across result rows changes
+    // the hover selection, which reflows the footer and races XCUITest's
+    // find-then-click coordinates.
+    func testScriptCommandRunsWithStreamedOutput() {
+        let search = app.textFields["launcher.search"]
+        search.click()
+        search.typeText("count")
+
+        let result = app.buttons["result.Count Lines"]
+        XCTAssertTrue(result.waitForExistence(timeout: 3))
+        XCTAssertTrue(result.label.contains("Script Command"))
+
+        // .return (the main Return key, keyCode 36) — the keypad .enter (⌤)
+        // routes through the panel's cancel path on this macOS build and never
+        // reaches the search field's key handler.
+        search.typeKey(.return, modifierFlags: [])
+
+        let chip = app.buttons["footer.runChip"]
+        XCTAssertTrue(chip.waitForExistence(timeout: 3))
+        // The ~1 s fixture can finish before the first label read, so accept
+        // either live state here; the strict "Completed" wait comes below.
+        XCTAssertTrue(chip.label.contains("Running") || chip.label.contains("Completed"))
+
+        search.typeKey("o", modifierFlags: [.command])
+        let output = app.descendants(matching: .any)["script.output"].firstMatch
+        XCTAssertTrue(output.waitForExistence(timeout: 3))
+
+        let streamed = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", "line 3", "line 3"),
+            object: output
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [streamed], timeout: 6), .completed)
+
+        // The chip's "Completed" state lasts only 4 s; the output panel's
+        // "Exit 0" status persists, so it is the reliable completion signal.
+        let status = app.descendants(matching: .any)["script.output.status"].firstMatch
+        let completed = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", "Exit 0", "Exit 0"),
+            object: status
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [completed], timeout: 8), .completed)
+
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = "Script command streamed output"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
     func testSystemSettingsAreSearchable() {
         let search = app.textFields["launcher.search"]
         search.click()

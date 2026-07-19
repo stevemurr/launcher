@@ -5,6 +5,7 @@ enum LauncherItemKind: String, Equatable {
     case systemSetting = "System Settings"
     case launcherSetting = "Launcher"
     case calculator = "Calculator"
+    case scriptCommand = "Script Command"
 
     var symbolName: String {
         switch self {
@@ -12,6 +13,7 @@ enum LauncherItemKind: String, Equatable {
         case .systemSetting: "gearshape.fill"
         case .launcherSetting: "slider.horizontal.3"
         case .calculator: "equal"
+        case .scriptCommand: "apple.terminal"
         }
     }
 }
@@ -20,6 +22,8 @@ enum LauncherDestination: Equatable {
     case url(URL)
     case launcherSettings
     case copyText(String)
+    case script(ScriptCommand)
+    case createScript
 }
 
 struct LauncherItem: Identifiable, Equatable {
@@ -31,8 +35,11 @@ struct LauncherItem: Identifiable, Equatable {
     let keywords: String
 
     var fileURL: URL? {
-        guard case let .url(url) = destination, url.isFileURL else { return nil }
-        return url
+        switch destination {
+        case let .url(url) where url.isFileURL: url
+        case let .script(command): command.url
+        default: nil
+        }
     }
 }
 
