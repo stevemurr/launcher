@@ -96,6 +96,15 @@ private struct LauncherSearchView: View {
                     ForEach(Array(script.arguments.enumerated()), id: \.offset) { index, argument in
                         ArgumentTokenBox(model: model, argument: argument, index: index, onCommand: handle)
                     }
+                    if model.focusTarget == .search {
+                        HStack(spacing: 5) {
+                            Text("Tab")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(Color.secondary.opacity(0.72))
+                            KeyCap("⇥")
+                        }
+                        .accessibilityIdentifier("header.tabHint")
+                    }
                 }
             } else {
                 HStack(spacing: 5) {

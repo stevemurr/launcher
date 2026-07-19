@@ -556,6 +556,14 @@ final class LauncherModel: ObservableObject {
               echo "line $i"
               sleep 0.3
             done
+            """),
+            ("greet.sh", """
+            #!/bin/sh
+            # @raycast.title Greet
+            # @raycast.mode fullOutput
+            # @raycast.packageName Fixtures
+            # @raycast.argument1 { "type": "text", "placeholder": "Name" }
+            echo "hello-$1"
             """)
         ]
         for fixture in fixtures {

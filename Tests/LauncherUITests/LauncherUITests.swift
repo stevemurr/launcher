@@ -110,6 +110,36 @@ final class LauncherUITests: XCTestCase {
         add(attachment)
     }
 
+    func testScriptArgumentFilledViaTab() {
+        let search = app.textFields["launcher.search"]
+        search.click()
+        search.typeText("greet")
+
+        XCTAssertTrue(app.buttons["result.Greet"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.textFields["argument.0"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.otherElements["header.tabHint"].exists || app.staticTexts["Tab"].exists)
+
+        // app-level typing goes to whatever holds focus; element-level typing
+        // would re-focus the search field and undo the Tab.
+        app.typeKey(.tab, modifierFlags: [])
+        app.typeText("world")
+        app.typeKey(.return, modifierFlags: [])
+
+        // fullOutput mode opens the output panel automatically.
+        let output = app.descendants(matching: .any)["script.output"].firstMatch
+        XCTAssertTrue(output.waitForExistence(timeout: 3))
+        let streamed = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", "hello-world", "hello-world"),
+            object: output
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [streamed], timeout: 6), .completed)
+
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = "Script argument via Tab"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
     func testSystemSettingsAreSearchable() {
         let search = app.textFields["launcher.search"]
         search.click()
