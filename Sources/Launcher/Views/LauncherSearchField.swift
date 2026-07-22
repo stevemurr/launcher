@@ -12,12 +12,19 @@ enum LauncherKeyCommand {
     case focusPrevious
     case toggleRunPalette
     case toggleOutput
+    case editScript
+    case deleteScript
+    case openWith
+    case quickLook
+    case showInFinder
+    case copyPath
 }
 
 struct LauncherSearchField: NSViewRepresentable {
     @Binding var text: String
     let focusToken: Int
     var isFocusTarget = true
+    var placeholder = "Search applications and settings"
     var onFocus: (() -> Void)?
     let onCommand: (LauncherKeyCommand) -> Void
 
@@ -36,7 +43,7 @@ struct LauncherSearchField: NSViewRepresentable {
         field.focusRingType = .none
         field.font = .systemFont(ofSize: 20, weight: .medium)
         field.textColor = .labelColor
-        field.placeholderString = "Search applications and settings"
+        field.placeholderString = placeholder
         field.lineBreakMode = .byTruncatingTail
         field.identifier = NSUserInterfaceItemIdentifier("launcher.search")
         field.setAccessibilityIdentifier("launcher.search")
@@ -46,6 +53,7 @@ struct LauncherSearchField: NSViewRepresentable {
 
     func updateNSView(_ field: KeyHandlingTextField, context: Context) {
         if field.stringValue != text { field.stringValue = text }
+        if field.placeholderString != placeholder { field.placeholderString = placeholder }
         field.onCommand = onCommand
         field.onFocus = onFocus
         context.coordinator.parent = self
@@ -70,6 +78,22 @@ struct LauncherSearchField: NSViewRepresentable {
         func controlTextDidChange(_ notification: Notification) {
             guard let field = notification.object as? NSTextField else { return }
             parent.text = field.stringValue
+        }
+
+        // While editing, plain arrow keys are consumed by the field editor
+        // (caret movement) before they can reach the text field's key
+        // handling, so intercept them here and drive the list selection.
+        func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            switch commandSelector {
+            case #selector(NSResponder.moveUp(_:)):
+                parent.onCommand(.moveUp)
+                return true
+            case #selector(NSResponder.moveDown(_:)):
+                parent.onCommand(.moveDown)
+                return true
+            default:
+                return false
+            }
         }
     }
 }
@@ -112,6 +136,26 @@ final class KeyHandlingTextField: NSTextField {
             onCommand?(.toggleOutput)
             return true
         }
+        if event.modifierFlags.contains(.command), characters == "e" {
+            onCommand?(.editScript)
+            return true
+        }
+        if event.modifierFlags.contains(.control), characters == "x" {
+            onCommand?(.deleteScript)
+            return true
+        }
+        if event.modifierFlags.contains(.command), event.modifierFlags.contains(.shift), characters == "c" {
+            onCommand?(.copyPath)
+            return true
+        }
+        if event.modifierFlags.contains(.command), characters == "f" {
+            onCommand?(.showInFinder)
+            return true
+        }
+        if event.modifierFlags.contains(.command), characters == "y" {
+            onCommand?(.quickLook)
+            return true
+        }
 
         switch event.keyCode {
         case 125:
@@ -119,7 +163,7 @@ final class KeyHandlingTextField: NSTextField {
         case 126:
             onCommand?(.moveUp)
         case 36, 76:
-            onCommand?(.submit)
+            onCommand?(event.modifierFlags.contains(.command) ? .openWith : .submit)
         case 53:
             onCommand?(.escape)
         case 48:

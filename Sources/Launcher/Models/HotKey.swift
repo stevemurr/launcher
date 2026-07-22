@@ -95,6 +95,6 @@ struct HotKey: Codable, Equatable, Sendable {
             UInt32(kVK_F9): "F9", UInt32(kVK_F10): "F10",
             UInt32(kVK_F11): "F11", UInt32(kVK_F12): "F12"
         ]
-        return names[keyCode] ?? "Key (keyCode)"
+        return names[keyCode] ?? "Key \(keyCode)"
     }
 }

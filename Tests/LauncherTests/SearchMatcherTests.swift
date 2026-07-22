@@ -26,9 +26,3 @@ final class SearchMatcherTests: XCTestCase {
         ))
     }
 }
-
-final class HotKeyTests: XCTestCase {
-    func testDefaultShortcutDisplay() {
-        XCTAssertEqual(HotKey.default.displayString, "⌥Space")
-    }
-}

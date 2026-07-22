@@ -4,6 +4,8 @@ A keyboard-first macOS application launcher written in Swift and SwiftUI. It dis
 
 Typing a math expression (for example `5+5`, `(2+3)*4`, `sqrt(9)`, or `50% * 300`) shows a calculator card with the answer; press Return to copy it to the clipboard. Supported syntax: `+ - * / ^ %` (trailing `%` is a percentage, `%` between values is modulo), parentheses, implicit multiplication (`2(3+4)`, `2pi`), the constants `pi`, `tau`, and `e`, and functions such as `sqrt`, `abs`, `ln`, `log`, `sin`, `cos`, and `tan`.
 
+Typing a path (`/`, `~`, `~/Desk`, `./notes`) switches to a file browser: directories and files are listed in sections with their octal permissions, and the last path component filters the listing. Return descends into a directory (the field clears and filters that folder; the back button or Escape walks back up) or opens a file. When browsing your home folder, a pinned iCloud Drive entry appears at the top. Command-K on an entry offers Open, Open With… (Command-Return), Show in Finder (Command-F), Quick Look (Command-Y), and Copy File Path (Shift-Command-C). The first time Launcher lists `~/Desktop`, `~/Documents`, or `~/Downloads`, macOS may show a one-time privacy prompt (it can appear behind the launcher panel).
+
 The default global shortcut is **Option-Space**. Open Launcher Settings with the gear button or Command-comma, click the shortcut recorder, and press any modified key combination to change it. The shortcut is persisted in `UserDefaults`.
 
 Launcher follows the current macOS light or dark appearance automatically.
@@ -48,7 +50,7 @@ The VM runner copies the resulting `.xcresult` bundle into `test-results/`.
 ## Keyboard controls
 
 - Up / Down: move selection
-- Return: open the selected result
+- Return: open the selected result, or enter the selected directory
 - Command-K: show actions
 - Command-comma: open Launcher Settings
-- Escape: close actions, return from settings, or dismiss Launcher
+- Escape: close actions, go up a directory while browsing files, return from settings, or dismiss Launcher

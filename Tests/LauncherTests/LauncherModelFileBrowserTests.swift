@@ -1,0 +1,394 @@
+import AppKit
+import XCTest
+@testable import Launcher
+
+private final class QuietLoginItems: LoginItemService {
+    var isEnabled = false
+    func setEnabled(_ enabled: Bool) throws { isEnabled = enabled }
+}
+
+final class LauncherModelFileBrowserTests: XCTestCase {
+    private var root: URL!
+    private var home: URL!
+    private var scriptsDirectory: URL!
+    private var defaults: UserDefaults!
+
+    override func setUpWithError() throws {
+        let fileManager = FileManager.default
+        root = fileManager.temporaryDirectory
+            .appendingPathComponent("model-browser-tests-\(UUID().uuidString)", isDirectory: true)
+        home = root.appendingPathComponent("home", isDirectory: true)
+        scriptsDirectory = root.appendingPathComponent("scripts", isDirectory: true)
+
+        try fileManager.createDirectory(at: home.appendingPathComponent("Alpha"), withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: scriptsDirectory, withIntermediateDirectories: true)
+        try "inner".write(to: home.appendingPathComponent("Alpha/Inner.txt"), atomically: true, encoding: .utf8)
+        try "notes".write(to: home.appendingPathComponent("Notes.txt"), atomically: true, encoding: .utf8)
+        try fileManager.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: home.appendingPathComponent("Alpha").path
+        )
+        try fileManager.setAttributes(
+            [.posixPermissions: 0o644],
+            ofItemAtPath: home.appendingPathComponent("Notes.txt").path
+        )
+
+        defaults = UserDefaults(suiteName: "LauncherModelFileBrowserTests-\(UUID().uuidString)")!
+    }
+
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(at: root)
+    }
+
+    private func makeModel() -> LauncherModel {
+        let settings = LauncherSettings(defaults: defaults)
+        settings.save(scriptsDirectory: scriptsDirectory)
+        return LauncherModel(
+            settings: settings,
+            isUITesting: false,
+            loginItems: QuietLoginItems(),
+            browseHome: home
+        )
+    }
+
+    private func selectItem(titled title: String, in model: LauncherModel) {
+        guard let index = model.results.firstIndex(where: { $0.title == title }) else {
+            XCTFail("no result titled \(title) in \(model.results.map(\.title))")
+            return
+        }
+        model.select(index: index)
+    }
+
+    // MARK: - Derived browsing
+
+    func testPathQueryShowsDirectoryListing() {
+        let model = makeModel()
+        model.query = "~/"
+
+        XCTAssertTrue(model.isFileBrowsing)
+        XCTAssertNil(model.calculation)
+        XCTAssertNil(model.browseSession)
+        XCTAssertEqual(model.results.map(\.title), ["Alpha", "Notes.txt"])
+        XCTAssertEqual(model.results[0].kind, .directory)
+        XCTAssertEqual(model.results[0].detail, "755")
+        XCTAssertEqual(model.results[1].kind, .file)
+        XCTAssertEqual(model.results[1].detail, "644")
+    }
+
+    func testPathQueryResolvesSynchronouslyForTestModels() {
+        // Unit test models are constructed with a fixed `browseHome`, so the
+        // listing must still resolve on the same run-loop turn as the query
+        // change (no background dispatch / generation lag) after the async
+        // offload was added for real (non-test) usage.
+        let model = makeModel()
+        model.query = "~/"
+
+        XCTAssertEqual(model.fileListing?.directory.standardizedFileURL.path, home.standardizedFileURL.path)
+        XCTAssertEqual(model.results.map(\.title), ["Alpha", "Notes.txt"])
+    }
+
+    func testLastPathComponentFiltersListing() {
+        let model = makeModel()
+        model.query = "~/Alp"
+
+        XCTAssertEqual(model.results.map(\.title), ["Alpha"])
+    }
+
+    func testNonPathQueryExitsDerivedBrowsing() {
+        let model = makeModel()
+        model.query = "~/"
+        XCTAssertTrue(model.isFileBrowsing)
+
+        model.query = "launcher"
+        XCTAssertFalse(model.isFileBrowsing)
+        XCTAssertTrue(model.results.contains { $0.title == "Launcher Settings" })
+    }
+
+    func testEscapeInDerivedModeClearsQueryWithoutClosing() {
+        var closed = false
+        let model = makeModel()
+        model.onRequestClose = { closed = true }
+        model.query = "~/"
+
+        model.handleEscape()
+
+        XCTAssertEqual(model.query, "")
+        XCTAssertFalse(model.isFileBrowsing)
+        XCTAssertFalse(closed)
+    }
+
+    // MARK: - Sticky browsing
+
+    func testSubmitOnDirectoryDescends() {
+        let model = makeModel()
+        model.query = "~/"
+        selectItem(titled: "Alpha", in: model)
+
+        model.handleSubmit()
+
+        XCTAssertEqual(model.query, "")
+        XCTAssertEqual(model.browseSession?.current.lastPathComponent, "Alpha")
+        XCTAssertTrue(model.searchFieldPlaceholder.contains("Alpha"))
+        XCTAssertEqual(model.results.map(\.title), ["Inner.txt"])
+    }
+
+    func testStickyModeTreatsQueryAsFilter() {
+        let model = makeModel()
+        model.query = "~/"
+        selectItem(titled: "Alpha", in: model)
+        model.handleSubmit()
+
+        model.query = "zzz"
+
+        XCTAssertNotNil(model.browseSession)
+        XCTAssertTrue(model.isFileBrowsing)
+        XCTAssertTrue(model.results.isEmpty)
+
+        model.query = "Inner"
+        XCTAssertEqual(model.results.map(\.title), ["Inner.txt"])
+    }
+
+    func testEscapeWalksUpThenExitsBeforeClosing() {
+        var closed = false
+        let model = makeModel()
+        model.onRequestClose = { closed = true }
+        model.query = "~/"
+        selectItem(titled: "Alpha", in: model)
+        model.handleSubmit()
+
+        // Stack is [home, Alpha]: first escape returns to the home listing.
+        model.handleEscape()
+        XCTAssertEqual(model.browseSession?.current.path, home.standardizedFileURL.path)
+        XCTAssertTrue(model.isFileBrowsing)
+        XCTAssertFalse(closed)
+
+        // Second escape leaves browse mode entirely.
+        model.handleEscape()
+        XCTAssertNil(model.browseSession)
+        XCTAssertFalse(model.isFileBrowsing)
+        XCTAssertEqual(model.query, "")
+        XCTAssertTrue(model.results.contains { $0.title == "Launcher Settings" })
+        XCTAssertFalse(closed)
+
+        // Third escape closes the window as usual.
+        model.handleEscape()
+        XCTAssertTrue(closed)
+    }
+
+    func testPrepareForPresentationClearsBrowseState() {
+        let model = makeModel()
+        model.query = "~/"
+        selectItem(titled: "Alpha", in: model)
+        model.handleSubmit()
+
+        model.prepareForPresentation(screen: .search)
+
+        XCTAssertNil(model.browseSession)
+        XCTAssertFalse(model.isFileBrowsing)
+        XCTAssertEqual(model.query, "")
+    }
+
+    func testUnreadableDirectoryProducesErrorListing() throws {
+        let locked = home.appendingPathComponent("locked", isDirectory: true)
+        try FileManager.default.createDirectory(at: locked, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: locked.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: locked.path) }
+
+        let model = makeModel()
+        model.query = "~/locked/"
+
+        XCTAssertEqual(model.fileListing?.error, .notReadable)
+        XCTAssertTrue(model.results.isEmpty)
+    }
+
+    // MARK: - Actions
+
+    func testAvailableActionsForFileEntries() {
+        let model = makeModel()
+        model.query = "~/"
+        selectItem(titled: "Notes.txt", in: model)
+
+        XCTAssertEqual(model.availableActions, [.open, .openWith, .showInFinder, .quickLook, .copyPath])
+    }
+
+    func testQuickLookActionFiresCallback() {
+        var previewed: URL?
+        let model = makeModel()
+        model.onQuickLook = { previewed = $0 }
+        model.query = "~/"
+        selectItem(titled: "Notes.txt", in: model)
+
+        model.perform(.quickLook)
+
+        XCTAssertEqual(previewed?.lastPathComponent, "Notes.txt")
+    }
+
+    func testCopyPathActionCopiesFilePath() {
+        let model = makeModel()
+        model.query = "~/"
+        selectItem(titled: "Notes.txt", in: model)
+
+        model.perform(.copyPath)
+
+        // The temporary directory is reachable both as /var/… and /private/var/…,
+        // so compare with symlinks resolved on both sides.
+        let copied = NSPasteboard.general.string(forType: .string).map {
+            URL(fileURLWithPath: $0).resolvingSymlinksInPath().path
+        }
+        XCTAssertEqual(
+            copied,
+            home.appendingPathComponent("Notes.txt").resolvingSymlinksInPath().path
+        )
+    }
+
+    // MARK: - Actions palette selection
+
+    func testArrowSelectionMovesThroughListing() {
+        let model = makeModel()
+        model.query = "~/"
+
+        XCTAssertEqual(model.results[model.selectedIndex].title, "Alpha")
+        model.moveSelection(by: 1)
+        XCTAssertEqual(model.results[model.selectedIndex].title, "Notes.txt")
+        model.moveSelection(by: -1)
+        XCTAssertEqual(model.results[model.selectedIndex].title, "Alpha")
+    }
+
+    func testActionsPaletteCapturesArrowsAndSubmit() {
+        let model = makeModel()
+        model.applicationFinder = { _ in [URL(fileURLWithPath: "/System/Applications/TextEdit.app")] }
+        model.query = "~/"
+        selectItem(titled: "Notes.txt", in: model)
+
+        model.toggleActions()
+        XCTAssertTrue(model.isActionsPresented)
+        XCTAssertEqual(model.actionsSelectionIndex, 0)
+
+        let resultSelection = model.selectedIndex
+        model.moveSelection(by: 1)
+        XCTAssertEqual(model.actionsSelectionIndex, 1)
+        XCTAssertEqual(model.selectedIndex, resultSelection, "arrows must not move the results selection")
+
+        model.moveSelection(by: -2)
+        XCTAssertEqual(model.actionsSelectionIndex, model.availableActions.count - 1, "selection wraps around")
+
+        // Back to index 1 (Open With…) and submit it.
+        model.moveSelection(by: 2)
+        XCTAssertEqual(model.availableActions[model.actionsSelectionIndex], .openWith)
+        model.handleSubmit()
+
+        XCTAssertFalse(model.isActionsPresented)
+        XCTAssertTrue(model.isOpenWithPresented)
+    }
+
+    func testActionsPaletteSelectionResetsOnReopen() {
+        let model = makeModel()
+        model.query = "~/"
+        selectItem(titled: "Notes.txt", in: model)
+
+        model.toggleActions()
+        model.moveSelection(by: 2)
+        XCTAssertEqual(model.actionsSelectionIndex, 2)
+
+        model.toggleActions()
+        model.toggleActions()
+        XCTAssertEqual(model.actionsSelectionIndex, 0)
+    }
+
+    // MARK: - Open With
+
+    func testOpenWithPaletteFlow() {
+        let textEdit = URL(fileURLWithPath: "/System/Applications/TextEdit.app")
+        let notesApp = URL(fileURLWithPath: "/System/Applications/Notes.app")
+        var opened: (file: URL, application: URL)?
+        var closed = false
+
+        let model = makeModel()
+        model.applicationFinder = { _ in [textEdit, notesApp] }
+        model.applicationOpener = { opened = (file: $0, application: $1) }
+        model.onRequestClose = { closed = true }
+        model.query = "~/"
+        selectItem(titled: "Notes.txt", in: model)
+
+        model.perform(.openWith)
+        XCTAssertTrue(model.isOpenWithPresented)
+        XCTAssertEqual(model.openWithApps.map(\.url), [textEdit, notesApp])
+        XCTAssertEqual(model.openWithSelectionIndex, 0)
+
+        let resultSelection = model.selectedIndex
+        model.moveSelection(by: 1)
+        XCTAssertEqual(model.openWithSelectionIndex, 1)
+        XCTAssertEqual(model.selectedIndex, resultSelection)
+
+        model.handleSubmit()
+        XCTAssertFalse(model.isOpenWithPresented)
+        XCTAssertEqual(opened?.file.lastPathComponent, "Notes.txt")
+        XCTAssertEqual(opened?.application, notesApp)
+        XCTAssertTrue(closed)
+    }
+
+    func testEscapeDismissesOpenWithPaletteFirst() {
+        var closed = false
+        let model = makeModel()
+        model.applicationFinder = { _ in [URL(fileURLWithPath: "/System/Applications/TextEdit.app")] }
+        model.onRequestClose = { closed = true }
+        model.query = "~/"
+        selectItem(titled: "Notes.txt", in: model)
+        model.perform(.openWith)
+
+        model.handleEscape()
+
+        XCTAssertFalse(model.isOpenWithPresented)
+        XCTAssertTrue(model.isFileBrowsing)
+        XCTAssertFalse(closed)
+    }
+
+    func testConfirmOpenWithUsesSnapshottedTargetNotLiveSelection() {
+        let textEdit = URL(fileURLWithPath: "/System/Applications/TextEdit.app")
+        var opened: (file: URL, application: URL)?
+
+        let model = makeModel()
+        model.applicationFinder = { _ in [textEdit] }
+        model.applicationOpener = { opened = (file: $0, application: $1) }
+        model.query = "~/"
+        selectItem(titled: "Notes.txt", in: model)
+
+        model.perform(.openWith)
+        XCTAssertTrue(model.isOpenWithPresented)
+
+        // A stray hover over another row while the palette is up moves the
+        // live selection; the palette must still act on the file it was
+        // presented for.
+        selectItem(titled: "Alpha", in: model)
+
+        model.confirmOpenWith()
+
+        XCTAssertEqual(
+            opened?.file.lastPathComponent, "Notes.txt",
+            "must open the file the palette was presented for, not the hovered row"
+        )
+        XCTAssertEqual(opened?.application, textEdit)
+    }
+
+    // MARK: - iCloud Drive pin
+
+    func testICloudEntryAppearsFirstAndDescends() throws {
+        let cloudDocs = home.appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs", isDirectory: true)
+        try FileManager.default.createDirectory(at: cloudDocs, withIntermediateDirectories: true)
+
+        let model = makeModel()
+        model.query = "~/"
+
+        XCTAssertEqual(model.results.first?.id, "file.icloud")
+        XCTAssertEqual(model.results.first?.title, "iCloud Drive")
+        XCTAssertEqual(model.results.first?.kind, .directory)
+        XCTAssertNil(model.results.first?.detail)
+
+        model.select(index: 0)
+        model.handleSubmit()
+        XCTAssertEqual(
+            model.browseSession?.current.standardizedFileURL.path,
+            cloudDocs.standardizedFileURL.path
+        )
+    }
+}

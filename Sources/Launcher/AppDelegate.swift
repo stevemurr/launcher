@@ -1,15 +1,39 @@
 import AppKit
 import Carbon
+import QuickLookUI
 import SwiftUI
 
 final class LauncherPanel: NSPanel {
     var onCancel: (() -> Void)?
+    weak var quickLook: QuickLookController?
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
 
     override func cancelOperation(_ sender: Any?) {
         onCancel?()
+    }
+
+    override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool {
+        true
+    }
+
+    override func beginPreviewPanelControl(_ panel: QLPreviewPanel!) {
+        panel.dataSource = quickLook
+        panel.delegate = quickLook
+    }
+
+    override func endPreviewPanelControl(_ panel: QLPreviewPanel!) {
+        panel.dataSource = nil
+        panel.delegate = nil
+        // Re-key the launcher when the preview closes so the normal
+        // hide-on-resign behavior resumes afterwards.
+        // Only re-key the launcher if it is still on screen. If the user dismissed
+        // it (orderOut) while Quick Look was up, isVisible is false and we must not
+        // resurrect it.
+        if isVisible {
+            makeKeyAndOrderFront(nil)
+        }
     }
 }
 
@@ -23,6 +47,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private var panel: LauncherPanel?
     private var statusItem: NSStatusItem?
+    private let quickLookController = QuickLookController()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(isUITesting ? .regular : .accessory)
@@ -42,11 +67,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func windowDidResignKey(_ notification: Notification) {
         guard !isUITesting else { return }
+        // Keep the launcher visible while the Quick Look panel has key status.
+        if QLPreviewPanel.sharedPreviewPanelExists(), QLPreviewPanel.shared().isVisible { return }
         panel?.orderOut(nil)
     }
 
     private func configureModelCallbacks() {
         model.onRequestClose = { [weak self] in self?.hideLauncher() }
+        model.onQuickLook = { [weak self] url in self?.quickLookController.toggle(url) }
         model.onHotKeyChange = { [weak self] newHotKey in
             guard let self else { return false }
             if self.isUITesting { return true }
@@ -82,6 +110,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             panel.appearance = NSAppearance(named: .darkAqua)
         }
         panel.onCancel = { [weak model] in model?.handleEscape() }
+        panel.quickLook = quickLookController
 
         let rootView = LauncherRootView(model: model)
         let hostingView = NSHostingView(rootView: rootView)

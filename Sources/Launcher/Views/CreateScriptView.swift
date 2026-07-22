@@ -17,7 +17,7 @@ struct CreateScriptView: View {
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("createScript.back")
 
-                Text("Create Script Command")
+                Text(isEditing ? "Edit Script Command" : "Create Script Command")
                     .font(.system(size: 19, weight: .semibold))
                     .accessibilityIdentifier("createScript.title.header")
 
@@ -32,14 +32,16 @@ struct CreateScriptView: View {
 
             ScrollView {
                 VStack(spacing: 13) {
-                    formRow("Template") {
-                        Picker("", selection: $model.scriptDraft.template) {
-                            ForEach(ScriptTemplate.allCases) { template in
-                                Text(template.displayName).tag(template)
+                    if !isEditing {
+                        formRow("Template") {
+                            Picker("", selection: $model.scriptDraft.template) {
+                                ForEach(ScriptTemplate.allCases) { template in
+                                    Text(template.displayName).tag(template)
+                                }
                             }
+                            .labelsHidden()
+                            .accessibilityIdentifier("createScript.template")
                         }
-                        .labelsHidden()
-                        .accessibilityIdentifier("createScript.template")
                     }
 
                     formRow("Mode") {
@@ -118,7 +120,7 @@ struct CreateScriptView: View {
                             .foregroundStyle(Color.white)
                     }
                     .frame(width: 20, height: 20)
-                    Text("Create Script Command")
+                    Text(isEditing ? "Edit Script Command" : "Create Script Command")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(Color.secondary)
                 }
@@ -126,10 +128,10 @@ struct CreateScriptView: View {
                 Spacer()
 
                 Button {
-                    model.createScript(andOpen: true)
+                    model.saveScriptDraft(andOpen: true)
                 } label: {
                     HStack(spacing: 6) {
-                        Text("Create and Open Script")
+                        Text(isEditing ? "Save and Open Script" : "Create and Open Script")
                             .font(.system(size: 13, weight: .semibold))
                         KeyCap("⇧")
                         KeyCap("⌘")
@@ -147,10 +149,10 @@ struct CreateScriptView: View {
                     .frame(width: 1, height: 14)
 
                 Button {
-                    model.createScript(andOpen: false)
+                    model.saveScriptDraft(andOpen: false)
                 } label: {
                     HStack(spacing: 6) {
-                        Text("Create Script")
+                        Text(isEditing ? "Save Changes" : "Create Script")
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(Color.primary.opacity(0.92))
                         KeyCap("⌘")
@@ -166,6 +168,10 @@ struct CreateScriptView: View {
             .frame(height: 39)
             .background(Color.launcherControlSurface.opacity(0.20))
         }
+    }
+
+    private var isEditing: Bool {
+        model.editingScriptURL != nil
     }
 
     private var trimmedTitleIsEmpty: Bool {

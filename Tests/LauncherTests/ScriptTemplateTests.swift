@@ -34,6 +34,16 @@ final class ScriptTemplateTests: XCTestCase {
         XCTAssertEqual(parsed?.arguments.map(\.placeholder), ["Branch", "Argument 2"])
     }
 
+    func testArgumentPlaceholderWithQuotesAndBackslashesRoundTrips() {
+        var draft = ScriptDraft()
+        draft.title = "Echo"
+        draft.argumentPlaceholders = ["Say \"hi\" \\ bye"]
+
+        let contents = draft.fileContents()
+        let parsed = ScriptMetadataParser.parse(contents: contents, url: URL(fileURLWithPath: "/tmp/x.sh"))
+        XCTAssertEqual(parsed?.arguments.map(\.placeholder), ["Say \"hi\" \\ bye"])
+    }
+
     func testPythonTemplateUsesPythonShebangAndExtension() {
         var draft = ScriptDraft()
         draft.template = .python

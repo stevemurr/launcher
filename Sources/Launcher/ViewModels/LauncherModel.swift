@@ -30,38 +30,67 @@ struct PendingScriptRun: Equatable {
 
 enum LauncherAction: String, CaseIterable, Identifiable {
     case open
+    case openWith
+    case editScript
     case showInFinder
+    case quickLook
     case copyPath
     case copyScriptContents
+    case deleteScript
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .open: "Open"
+        case .openWith: "Open With…"
+        case .editScript: "Edit Script Command"
         case .showInFinder: "Show in Finder"
+        case .quickLook: "Quick Look"
         case .copyPath: "Copy Path"
         case .copyScriptContents: "Copy Script Contents"
+        case .deleteScript: "Delete Script Command"
         }
     }
 
     var symbolName: String {
         switch self {
         case .open: "arrow.up.forward.app"
+        case .openWith: "app.badge.checkmark"
+        case .editScript: "square.and.pencil"
         case .showInFinder: "folder"
+        case .quickLook: "eye"
         case .copyPath: "doc.on.doc"
         case .copyScriptContents: "doc.on.clipboard"
+        case .deleteScript: "trash"
         }
     }
 
     var shortcut: String {
         switch self {
         case .open: "↩"
-        case .showInFinder: "⌘↩"
+        case .openWith: "⌘↩"
+        case .editScript: "⌘E"
+        case .showInFinder: "⌘F"
+        case .quickLook: "⌘Y"
         case .copyPath: "⌘⇧C"
         case .copyScriptContents: "⌥⌘C"
+        case .deleteScript: "⌃X"
         }
     }
+}
+
+struct FileBrowserSession: Equatable {
+    var stack: [URL]
+
+    var current: URL { stack[stack.count - 1] }
+}
+
+struct OpenWithCandidate: Equatable, Identifiable {
+    let url: URL
+    let name: String
+
+    var id: String { url.path }
 }
 
 final class LauncherModel: ObservableObject {
@@ -81,6 +110,7 @@ final class LauncherModel: ObservableObject {
     @Published var selectedIndex = 0
     @Published var screen: LauncherScreen = .search
     @Published var isActionsPresented = false
+    @Published var actionsSelectionIndex = 0
     @Published var isLoading = false
     @Published var focusToken = 0
     @Published private(set) var launchAtLogin = false
@@ -95,18 +125,40 @@ final class LauncherModel: ObservableObject {
     @Published var argumentValues: [String] = []
     @Published var scriptDraft = ScriptDraft()
     @Published var createScriptError: String?
+    @Published private(set) var editingScriptURL: URL?
+    @Published private(set) var pendingDeletion: ScriptCommand?
+
+    @Published private(set) var browseSession: FileBrowserSession?
+    @Published private(set) var fileListing: FileListing?
+    @Published var isOpenWithPresented = false
+    @Published private(set) var openWithApps: [OpenWithCandidate] = []
+    @Published var openWithSelectionIndex = 0
+    @Published private(set) var openWithTarget: URL?
 
     let settings: LauncherSettings
     var onRequestClose: (() -> Void)?
     var onHotKeyChange: ((HotKey) -> Bool)?
+    var onQuickLook: ((URL) -> Void)?
+    var applicationFinder: (URL) -> [URL] = { url in
+        NSWorkspace.shared.urlsForApplications(toOpen: url)
+    }
+    var applicationOpener: (URL, URL) -> Void = { fileURL, applicationURL in
+        NSWorkspace.shared.open(
+            [fileURL],
+            withApplicationAt: applicationURL,
+            configuration: NSWorkspace.OpenConfiguration()
+        )
+    }
 
     private let isUITesting: Bool
     private let loginItems: LoginItemService
     private let scriptRunner: ScriptRunning
     private let scriptsDirectoryOverride: URL?
+    private let browseHomeOverride: URL?
     private var applications: [LauncherItem] = []
     private var scripts: [LauncherItem] = []
     private var runGeneration = 0
+    private var browseGeneration = 0
     private var lastSelectedScriptID: String?
     private let launcherSettingsItem = LauncherItem(
         id: "launcher.settings",
@@ -129,13 +181,15 @@ final class LauncherModel: ObservableObject {
         settings: LauncherSettings,
         isUITesting: Bool = false,
         loginItems: LoginItemService? = nil,
-        scriptRunner: ScriptRunning? = nil
+        scriptRunner: ScriptRunning? = nil,
+        browseHome: URL? = nil
     ) {
         self.settings = settings
         self.isUITesting = isUITesting
         self.loginItems = loginItems ?? (isUITesting ? InMemoryLoginItemService() : AppLoginItemService())
         self.scriptRunner = scriptRunner ?? ProcessScriptRunner()
         self.scriptsDirectoryOverride = isUITesting ? Self.writeUITestFixtureScripts() : nil
+        self.browseHomeOverride = browseHome ?? (isUITesting ? Self.writeUITestFixtureFiles() : nil)
         launchAtLogin = self.loginItems.isEnabled
         if isUITesting { applyScripts(ScriptCommandCatalog.discoverScripts(in: effectiveScriptsDirectory)) }
         refreshResults(resetSelection: true)
@@ -155,9 +209,18 @@ final class LauncherModel: ObservableObject {
         guard let selectedItem else { return [] }
         switch selectedItem.kind {
         case .application: return [.open, .showInFinder, .copyPath]
-        case .scriptCommand: return [.open, .showInFinder, .copyScriptContents]
+        case .scriptCommand: return [.open, .editScript, .showInFinder, .copyScriptContents, .deleteScript]
+        case .file, .directory: return [.open, .openWith, .showInFinder, .quickLook, .copyPath]
         default: return [.open]
         }
+    }
+
+    var isFileBrowsing: Bool { fileListing != nil }
+
+    var searchFieldPlaceholder: String {
+        guard let session = browseSession else { return "Search applications and settings" }
+        let path = session.current.path
+        return "Search in \(path == "/" ? "/" : path + "/")…"
     }
 
     var effectiveScriptsDirectory: URL {
@@ -207,19 +270,38 @@ final class LauncherModel: ObservableObject {
     func prepareForPresentation(screen: LauncherScreen = .search) {
         self.screen = screen
         isActionsPresented = false
+        actionsSelectionIndex = 0
         isRunPalettePresented = false
+        isOpenWithPresented = false
         pendingRun = nil
+        pendingDeletion = nil
+        editingScriptURL = nil
         isOutputExpanded = false
         focusTarget = .search
+        browseSession = nil
         rescanScripts()
         if screen == .search {
             query = ""
+            // query.didSet is guarded against no-op assignments, so refresh
+            // explicitly to drop any stale file listing.
+            refreshResults(resetSelection: true)
             selectedIndex = 0
             focusToken += 1
         }
     }
 
     func moveSelection(by offset: Int) {
+        if isOpenWithPresented {
+            guard !openWithApps.isEmpty else { return }
+            openWithSelectionIndex = (openWithSelectionIndex + offset + openWithApps.count) % openWithApps.count
+            return
+        }
+        if isActionsPresented {
+            let count = availableActions.count
+            guard count > 0 else { return }
+            actionsSelectionIndex = (actionsSelectionIndex + offset + count) % count
+            return
+        }
         guard !results.isEmpty else { return }
         selectedIndex = (selectedIndex + offset + results.count) % results.count
         syncArgumentState()
@@ -237,8 +319,23 @@ final class LauncherModel: ObservableObject {
     }
 
     func handleSubmit() {
+        if isOpenWithPresented {
+            confirmOpenWith()
+            return
+        }
+        if pendingDeletion != nil {
+            confirmPendingDeletion()
+            return
+        }
         if pendingRun != nil {
             confirmPendingRun()
+            return
+        }
+        if isActionsPresented {
+            let actions = availableActions
+            if actions.indices.contains(actionsSelectionIndex) {
+                perform(actions[actionsSelectionIndex])
+            }
             return
         }
         if isOutputExpanded { return }
@@ -261,8 +358,11 @@ final class LauncherModel: ObservableObject {
         case .createScript:
             scriptDraft = ScriptDraft()
             createScriptError = nil
+            editingScriptURL = nil
             screen = .createScript
             isActionsPresented = false
+        case let .browseDirectory(url):
+            descend(into: url)
         }
     }
 
@@ -274,20 +374,28 @@ final class LauncherModel: ObservableObject {
     func showSearch() {
         screen = .search
         isActionsPresented = false
+        editingScriptURL = nil
         focusToken += 1
     }
 
     func handleEscape() {
-        if pendingRun != nil {
+        if pendingDeletion != nil {
+            dismissPendingDeletion()
+        } else if pendingRun != nil {
             dismissPendingRun()
         } else if isRunPalettePresented {
             isRunPalettePresented = false
+        } else if isOpenWithPresented {
+            isOpenWithPresented = false
+            openWithTarget = nil
         } else if isActionsPresented {
             isActionsPresented = false
-        } else if case .argument = focusTarget {
+        } else if screen == .search, case .argument = focusTarget {
             focusSearch()
         } else if isOutputExpanded {
             isOutputExpanded = false
+        } else if isFileBrowsing {
+            ascendOrExitBrowse()
         } else if screen != .search {
             showSearch()
         } else {
@@ -296,7 +404,9 @@ final class LauncherModel: ObservableObject {
     }
 
     func toggleActions() {
-        guard selectedItem != nil else { return }
+        guard selectedItem != nil, pendingRun == nil, pendingDeletion == nil else { return }
+        if isOpenWithPresented { isOpenWithPresented = false }
+        if !isActionsPresented { actionsSelectionIndex = 0 }
         isActionsPresented.toggle()
     }
 
@@ -307,6 +417,15 @@ final class LauncherModel: ObservableObject {
         switch action {
         case .open:
             activate(selectedItem)
+        case .openWith:
+            presentOpenWith()
+        case .quickLook:
+            guard let fileURL = selectedItem.fileURL else { return }
+            onQuickLook?(fileURL)
+        case .editScript:
+            beginEditingSelectedScript()
+        case .deleteScript:
+            requestDeletingSelectedScript()
         case .showInFinder:
             guard let fileURL = selectedItem.fileURL else { return }
             NSWorkspace.shared.activateFileViewerSelecting([fileURL])
@@ -341,6 +460,152 @@ final class LauncherModel: ObservableObject {
         } else {
             settings.hotKeyError = "That shortcut is already used by another application."
         }
+    }
+
+    // MARK: - File browsing
+
+    func descend(into url: URL) {
+        var stack = browseSession?.stack ?? []
+        if stack.isEmpty, let listing = fileListing {
+            // Entering sticky mode from a typed path: seed the stack with the
+            // listed directory so Escape returns to it before exiting.
+            stack.append(listing.directory)
+        }
+        stack.append(url)
+        browseSession = FileBrowserSession(stack: stack)
+        if query.isEmpty {
+            refreshResults(resetSelection: true)
+        } else {
+            query = ""
+        }
+        focusSearch()
+    }
+
+    func ascendOrExitBrowse() {
+        if var session = browseSession {
+            session.stack.removeLast()
+            browseSession = session.stack.isEmpty ? nil : session
+            if query.isEmpty {
+                refreshResults(resetSelection: true)
+            } else {
+                query = ""
+            }
+            focusSearch()
+        } else if fileListing != nil {
+            // Derived mode always has a non-empty path-like query; clearing it
+            // exits the browser via query.didSet.
+            query = ""
+        }
+    }
+
+    private var browseHome: URL {
+        browseHomeOverride ?? FileManager.default.homeDirectoryForCurrentUser
+    }
+
+    private func applyBrowseResults(filter trimmedQuery: String, resetSelection: Bool) {
+        let session = browseSession
+        let home = browseHome
+
+        // Tests drive `query`/`browseSession` and assert on `results`/`fileListing`
+        // synchronously, so keep the UI-testing and fixed-home (unit test) paths
+        // inline. Real usage (no override) offloads the directory listing since
+        // it enumerates and locale-sorts the whole directory on every keystroke.
+        if isUITesting || browseHomeOverride != nil {
+            let listing = Self.resolveListing(session: session, filter: trimmedQuery, home: home)
+            applyListing(listing, resetSelection: resetSelection)
+            return
+        }
+
+        browseGeneration += 1
+        let generation = browseGeneration
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let listing = Self.resolveListing(session: session, filter: trimmedQuery, home: home)
+            DispatchQueue.main.async {
+                guard let self, self.browseGeneration == generation else { return }
+                self.applyListing(listing, resetSelection: resetSelection)
+            }
+        }
+    }
+
+    private static func resolveListing(
+        session: FileBrowserSession?,
+        filter trimmedQuery: String,
+        home: URL
+    ) -> FileListing? {
+        if let session {
+            return FileBrowserEngine.list(directory: session.current, filter: trimmedQuery, home: home)
+        } else if let request = FileBrowserEngine.parse(trimmedQuery, home: home) {
+            return FileBrowserEngine.list(directory: request.directory, filter: request.filter, home: home)
+        } else {
+            return nil
+        }
+    }
+
+    private func applyListing(_ listing: FileListing?, resetSelection: Bool) {
+        guard let listing else {
+            fileListing = nil
+            results = []
+            return
+        }
+
+        fileListing = listing
+        var items: [LauncherItem] = []
+        if let iCloudEntry = listing.iCloudEntry {
+            items.append(makeFileItem(iCloudEntry, isICloud: true))
+        }
+        items += listing.directories.map { makeFileItem($0) }
+        items += listing.files.map { makeFileItem($0) }
+        results = items
+
+        if resetSelection || !results.indices.contains(selectedIndex) {
+            selectedIndex = 0
+        }
+        syncArgumentState()
+    }
+
+    private func makeFileItem(_ entry: FileEntry, isICloud: Bool = false) -> LauncherItem {
+        LauncherItem(
+            id: isICloud ? "file.icloud" : "file.\(entry.url.path)",
+            title: entry.name,
+            subtitle: nil,
+            kind: entry.isDirectory ? .directory : .file,
+            destination: entry.isDirectory ? .browseDirectory(entry.url) : .url(entry.url),
+            keywords: "",
+            detail: entry.permissions.isEmpty ? nil : entry.permissions
+        )
+    }
+
+    // MARK: - Open With
+
+    var openWithTitle: String {
+        guard let openWithTarget else { return "Open With" }
+        return "Open \(FileManager.default.displayName(atPath: openWithTarget.path)) With"
+    }
+
+    func presentOpenWith() {
+        guard let fileURL = selectedItem?.fileURL else { return }
+        isActionsPresented = false
+        openWithTarget = fileURL
+        openWithApps = applicationFinder(fileURL).prefix(8).map { url in
+            OpenWithCandidate(url: url, name: FileManager.default.displayName(atPath: url.path))
+        }
+        openWithSelectionIndex = 0
+        isOpenWithPresented = true
+    }
+
+    func selectOpenWith(index: Int) {
+        guard openWithApps.indices.contains(index) else { return }
+        openWithSelectionIndex = index
+    }
+
+    func confirmOpenWith() {
+        guard isOpenWithPresented else { return }
+        isOpenWithPresented = false
+        guard openWithApps.indices.contains(openWithSelectionIndex),
+              let fileURL = openWithTarget else { return }
+        applicationOpener(fileURL, openWithApps[openWithSelectionIndex].url)
+        openWithTarget = nil
+        onRequestClose?()
     }
 
     // MARK: - Script commands
@@ -400,6 +665,45 @@ final class LauncherModel: ObservableObject {
 
     func dismissPendingRun() {
         pendingRun = nil
+    }
+
+    func beginEditingSelectedScript() {
+        guard let script = selectedScript else { return }
+        // Re-read the file so the form reflects edits made outside the app
+        // since the last scan.
+        let command: ScriptCommand
+        if let contents = try? String(contentsOf: script.url, encoding: .utf8),
+           let parsed = ScriptMetadataParser.parse(contents: contents, url: script.url) {
+            command = parsed
+        } else {
+            command = script
+        }
+        scriptDraft = ScriptDraft(command: command)
+        editingScriptURL = command.url
+        createScriptError = nil
+        screen = .createScript
+        isActionsPresented = false
+    }
+
+    func requestDeletingSelectedScript() {
+        guard let script = selectedScript else { return }
+        pendingDeletion = script
+        isActionsPresented = false
+    }
+
+    func confirmPendingDeletion() {
+        guard let pendingDeletion else { return }
+        self.pendingDeletion = nil
+        do {
+            try FileManager.default.removeItem(at: pendingDeletion.url)
+            applyScripts(ScriptCommandCatalog.discoverScripts(in: effectiveScriptsDirectory))
+        } catch {
+            NSSound.beep()
+        }
+    }
+
+    func dismissPendingDeletion() {
+        pendingDeletion = nil
     }
 
     private func startRun(script: ScriptCommand, arguments: [String]) {
@@ -519,18 +823,25 @@ final class LauncherModel: ObservableObject {
         if focusTarget != .search { focusSearch() }
     }
 
-    // MARK: - Create script
+    // MARK: - Create / edit script
 
-    func createScript(andOpen: Bool) {
+    func saveScriptDraft(andOpen: Bool) {
         do {
-            let url = try ScriptCommandCreator.create(draft: scriptDraft, in: effectiveScriptsDirectory)
+            let url: URL
+            if let editingScriptURL {
+                try ScriptCommandCreator.update(draft: scriptDraft, at: editingScriptURL)
+                url = editingScriptURL
+            } else {
+                url = try ScriptCommandCreator.create(draft: scriptDraft, in: effectiveScriptsDirectory)
+            }
             let title = scriptDraft.title
             applyScripts(ScriptCommandCatalog.discoverScripts(in: effectiveScriptsDirectory))
             showSearch()
             query = title
             if andOpen { NSWorkspace.shared.open(url) }
         } catch {
-            createScriptError = "Could not create the script: \(error.localizedDescription)"
+            let verb = editingScriptURL == nil ? "create" : "save"
+            createScriptError = "Could not \(verb) the script: \(error.localizedDescription)"
         }
     }
 
@@ -574,6 +885,27 @@ final class LauncherModel: ObservableObject {
         return directory
     }
 
+    private static func writeUITestFixtureFiles() -> URL {
+        let fileManager = FileManager.default
+        let home = fileManager.temporaryDirectory
+            .appendingPathComponent("launcher-ui-files-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true)
+        let alpha = home.appendingPathComponent("Alpha", isDirectory: true)
+        try? fileManager.createDirectory(at: alpha, withIntermediateDirectories: true)
+
+        let files: [(path: URL, contents: String, permissions: Int)] = [
+            (alpha.appendingPathComponent("Inner.txt"), "inner fixture", 0o644),
+            (home.appendingPathComponent("Notes.txt"), "notes fixture", 0o644),
+            (home.appendingPathComponent("Read Me.md"), "readme fixture", 0o644),
+            (home.appendingPathComponent(".hidden.txt"), "hidden fixture", 0o644)
+        ]
+        for file in files {
+            try? file.contents.write(to: file.path, atomically: true, encoding: .utf8)
+            try? fileManager.setAttributes([.posixPermissions: file.permissions], ofItemAtPath: file.path.path)
+        }
+        try? fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: alpha.path)
+        return home
+    }
+
     private func apply(records: [ApplicationRecord]) {
         applications = records.map { record in
             LauncherItem(
@@ -593,6 +925,13 @@ final class LauncherModel: ObservableObject {
         let allItems = [launcherSettingsItem, createScriptItem]
             + applications + scripts + ApplicationCatalog.systemSettings
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if browseSession != nil || FileBrowserEngine.isPathLike(trimmedQuery) {
+            calculation = nil
+            applyBrowseResults(filter: trimmedQuery, resetSelection: resetSelection)
+            return
+        }
+        fileListing = nil
 
         calculation = trimmedQuery.isEmpty ? nil : CalculatorEngine.evaluate(trimmedQuery)
 

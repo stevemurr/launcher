@@ -247,7 +247,7 @@ struct ConfirmRunPalette: View {
             .padding(.horizontal, 12)
             .frame(height: 40)
 
-            paletteRow(
+            ConfirmPaletteRow(
                 title: "Run Script",
                 symbol: "play.fill",
                 keyCap: "↩",
@@ -256,7 +256,7 @@ struct ConfirmRunPalette: View {
             ) {
                 model.confirmPendingRun()
             }
-            paletteRow(
+            ConfirmPaletteRow(
                 title: "Cancel",
                 symbol: "xmark",
                 keyCap: "Esc",
@@ -269,26 +269,63 @@ struct ConfirmRunPalette: View {
             Spacer(minLength: 6)
         }
         .frame(width: 360, height: 138)
-        .background {
-            VisualEffectView(material: .popover, blendingMode: .withinWindow)
-                .overlay(Color.launcherSurface.opacity(0.56))
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(Color.launcherSeparator.opacity(0.9), lineWidth: 1)
-        }
-        .shadow(color: .black.opacity(0.24), radius: 20, y: 8)
+        .confirmPaletteChrome()
     }
+}
 
-    private func paletteRow(
-        title: String,
-        symbol: String,
-        keyCap: String,
-        highlighted: Bool,
-        identifier: String,
-        action: @escaping () -> Void
-    ) -> some View {
+/// Confirmation palette shown before deleting a script command's file.
+struct ConfirmDeletePalette: View {
+    @ObservedObject var model: LauncherModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("Delete \"\(model.pendingDeletion?.title ?? "")\"?")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.secondary)
+                    .lineLimit(1)
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 40)
+
+            ConfirmPaletteRow(
+                title: "Delete Script",
+                symbol: "trash",
+                keyCap: "↩",
+                highlighted: true,
+                tint: .red,
+                identifier: "confirmDelete.delete"
+            ) {
+                model.confirmPendingDeletion()
+            }
+            ConfirmPaletteRow(
+                title: "Cancel",
+                symbol: "xmark",
+                keyCap: "Esc",
+                highlighted: false,
+                identifier: "confirmDelete.cancel"
+            ) {
+                model.dismissPendingDeletion()
+            }
+
+            Spacer(minLength: 6)
+        }
+        .frame(width: 360, height: 138)
+        .confirmPaletteChrome()
+    }
+}
+
+private struct ConfirmPaletteRow: View {
+    let title: String
+    let symbol: String
+    let keyCap: String
+    let highlighted: Bool
+    var tint: Color = .primary
+    let identifier: String
+    let action: () -> Void
+
+    var body: some View {
         Button(action: action) {
             HStack(spacing: 10) {
                 Image(systemName: symbol)
@@ -299,7 +336,7 @@ struct ConfirmRunPalette: View {
                 Spacer()
                 KeyCap(keyCap)
             }
-            .foregroundStyle(Color.primary)
+            .foregroundStyle(tint)
             .padding(.horizontal, 10)
             .frame(height: 40)
             .background {
@@ -311,6 +348,21 @@ struct ConfirmRunPalette: View {
         .buttonStyle(.plain)
         .padding(.horizontal, 7)
         .accessibilityIdentifier(identifier)
+    }
+}
+
+private extension View {
+    func confirmPaletteChrome() -> some View {
+        background {
+            VisualEffectView(material: .popover, blendingMode: .withinWindow)
+                .overlay(Color.launcherSurface.opacity(0.56))
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.launcherSeparator.opacity(0.9), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.24), radius: 20, y: 8)
     }
 }
 

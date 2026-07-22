@@ -140,6 +140,154 @@ final class LauncherUITests: XCTestCase {
         add(attachment)
     }
 
+    // Palette and editor are reached via ⌘K/⌘E, not mouse clicks: mouse
+    // travel to the footer or palette sweeps result rows and the hover
+    // selection races the click (see testScriptCommandRunsWithStreamedOutput).
+    func testEditScriptCommandFromActions() {
+        let search = app.textFields["launcher.search"]
+        search.click()
+        search.typeText("say hello")
+
+        XCTAssertTrue(app.buttons["result.Say Hello"].waitForExistence(timeout: 3))
+
+        search.typeKey("k", modifierFlags: [.command])
+        XCTAssertTrue(app.buttons["action.editScript"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.buttons["action.deleteScript"].exists)
+        search.typeKey(.escape, modifierFlags: [])
+
+        search.typeKey("e", modifierFlags: [.command])
+
+        let titleField = app.textFields["createScript.title"]
+        XCTAssertTrue(titleField.waitForExistence(timeout: 3))
+        XCTAssertEqual(titleField.value as? String, "Say Hello")
+
+        titleField.click()
+        titleField.typeKey("a", modifierFlags: [.command])
+        titleField.typeText("Say Howdy")
+        app.buttons["createScript.create"].click()
+
+        XCTAssertTrue(app.buttons["result.Say Howdy"].waitForExistence(timeout: 3))
+
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = "Edited script command"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    // Keyboard-driven (⌃X, then Return to confirm): with several results on
+    // screen, mouse travel to the palette sweeps rows and the hover selection
+    // races the click — same reason the run test avoids the mouse.
+    func testDeleteScriptCommandFromActions() {
+        let search = app.textFields["launcher.search"]
+        search.click()
+        search.typeText("count")
+
+        let result = app.buttons["result.Count Lines"]
+        XCTAssertTrue(result.waitForExistence(timeout: 3))
+
+        search.typeKey("x", modifierFlags: [.control])
+
+        let confirm = app.buttons["confirmDelete.delete"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 2))
+
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = "Delete script confirmation"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+
+        search.typeKey(.return, modifierFlags: [])
+
+        let removed = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == false"),
+            object: result
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [removed], timeout: 5), .completed)
+    }
+
+    // Keyboard-driven like the script tests: mouse travel over rows changes
+    // the hover selection and races clicks. Quick Look (⌘Y) is not driven
+    // here — the QL panel is flaky under XCUITest in a VM; its wiring is
+    // covered by unit tests (testQuickLookActionFiresCallback).
+    func testFileBrowserNavigatesWithEnterAndEscape() {
+        let search = app.textFields["launcher.search"]
+        search.click()
+        search.typeText("~/")
+
+        // Fixture home: Alpha/ (with Inner.txt), Notes.txt, Read Me.md, .hidden.txt.
+        XCTAssertTrue(app.buttons["result.Alpha"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["result.Notes.txt"].exists)
+        XCTAssertFalse(app.buttons["result..hidden.txt"].exists)
+
+        // The last path component filters the listing.
+        search.typeText("Alph")
+        XCTAssertTrue(app.buttons["result.Alpha"].waitForExistence(timeout: 3))
+        XCTAssertFalse(app.buttons["result.Notes.txt"].exists)
+
+        // Enter descends: field clears, back button appears, contents swap.
+        search.typeKey(.return, modifierFlags: [])
+        XCTAssertTrue(app.buttons["header.back"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["result.Inner.txt"].waitForExistence(timeout: 3))
+
+        // ⌘K shows the file actions.
+        search.typeKey("k", modifierFlags: [.command])
+        XCTAssertTrue(app.buttons["action.openWith"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.buttons["action.quickLook"].exists)
+        XCTAssertTrue(app.buttons["action.showInFinder"].exists)
+        XCTAssertTrue(app.buttons["action.copyPath"].exists)
+
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = "File browser actions"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+
+        search.typeKey(.escape, modifierFlags: [])
+
+        // Escape walks back up to the home listing, then exits the browser.
+        search.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(app.buttons["result.Notes.txt"].waitForExistence(timeout: 3))
+
+        search.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(app.buttons["result.Launcher Settings"].waitForExistence(timeout: 3))
+        XCTAssertFalse(app.buttons["header.back"].exists)
+    }
+
+    // Arrow keys must drive selection while the search field is being edited
+    // (the field editor would otherwise swallow them as caret movement) and,
+    // when the ⌘K palette is open, must move the palette highlight instead.
+    // The footer's primary-action label tracks the list selection, so it is
+    // the observable signal for which row is selected.
+    func testArrowKeysDriveSelectionAndActionsPalette() {
+        let search = app.textFields["launcher.search"]
+        search.click()
+        search.typeText("~/")
+
+        // Fixture home lists Alpha/ (directory) first, then Notes.txt.
+        XCTAssertTrue(app.buttons["result.Alpha"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["Open Directory"].exists)
+
+        search.typeKey(.downArrow, modifierFlags: [])
+        XCTAssertTrue(app.staticTexts["Open File"].waitForExistence(timeout: 2))
+
+        search.typeKey(.upArrow, modifierFlags: [])
+        XCTAssertTrue(app.staticTexts["Open Directory"].waitForExistence(timeout: 2))
+
+        search.typeKey(.downArrow, modifierFlags: [])
+        search.typeKey("k", modifierFlags: [.command])
+        XCTAssertTrue(app.buttons["action.open"].waitForExistence(timeout: 2))
+
+        // ↓ highlights "Open With…"; Return performs it.
+        search.typeKey(.downArrow, modifierFlags: [])
+        search.typeKey(.return, modifierFlags: [])
+        XCTAssertTrue(app.staticTexts["openWith.title"].waitForExistence(timeout: 3))
+
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = "Open With via arrow keys"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+
+        search.typeKey(.escape, modifierFlags: [])
+    }
+
     func testSystemSettingsAreSearchable() {
         let search = app.textFields["launcher.search"]
         search.click()

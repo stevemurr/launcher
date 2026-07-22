@@ -232,6 +232,47 @@ final class LauncherModelScriptTests: XCTestCase {
         XCTAssertEqual(model.focusTarget, .search)
     }
 
+    func testEscapeLeavesCreateScriptScreenDespiteStaleArgumentFocus() throws {
+        try writeScript(
+            "focus-edit.sh",
+            header: "# @raycast.title Focus Edit\n# @raycast.argument1 { \"placeholder\": \"Name\" }",
+            body: "echo hi"
+        )
+        let model = makeModel()
+        waitForScripts(in: model, query: "focus edit")
+        model.select(index: model.results.firstIndex { $0.kind == .scriptCommand }!)
+        model.focus(.argument(0))
+        XCTAssertEqual(model.focusTarget, .argument(0))
+
+        model.beginEditingSelectedScript()
+        XCTAssertEqual(model.screen, .createScript)
+
+        model.handleEscape()
+
+        XCTAssertEqual(
+            model.screen, .search,
+            "a single escape must leave the create/edit screen even though focusTarget is stale from the search screen"
+        )
+    }
+
+    func testToggleActionsIgnoredWhilePendingRunConfirmationIsUp() throws {
+        try writeScript(
+            "confirm.sh",
+            header: "# @raycast.title Confirm Me\n# @raycast.needsConfirmation true",
+            body: "echo hi"
+        )
+        let model = makeModel()
+        waitForScripts(in: model, query: "confirm me")
+        model.select(index: model.results.firstIndex { $0.kind == .scriptCommand }!)
+
+        model.handleSubmit()
+        XCTAssertNotNil(model.pendingRun)
+
+        model.toggleActions()
+
+        XCTAssertFalse(model.isActionsPresented, "the actions palette must not open behind a pending confirmation")
+    }
+
     func testBusyRunnerRejectsSecondRunAndShowsPalette() throws {
         try writeScript("a.sh", header: "# @raycast.title Alpha Script\n# @raycast.mode compact", body: "echo a")
         let runner = StubScriptRunner()
@@ -322,7 +363,7 @@ final class LauncherModelScriptTests: XCTestCase {
         model.scriptDraft.title = "Fresh Command"
         model.scriptDraft.mode = .inline
 
-        model.createScript(andOpen: false)
+        model.saveScriptDraft(andOpen: false)
 
         XCTAssertEqual(model.screen, .search)
         XCTAssertEqual(model.query, "Fresh Command")
@@ -330,5 +371,88 @@ final class LauncherModelScriptTests: XCTestCase {
         let created = directory.appendingPathComponent("fresh-command.sh")
         XCTAssertTrue(FileManager.default.isExecutableFile(atPath: created.path))
         XCTAssertTrue(model.results.contains { $0.title == "Fresh Command" && $0.kind == .scriptCommand })
+    }
+
+    func testScriptActionsIncludeEditAndDelete() throws {
+        try writeScript("act.sh", header: "# @raycast.title Actionable", body: "echo hi")
+        let model = makeModel()
+        waitForScripts(in: model, query: "actionable")
+        model.select(index: model.results.firstIndex { $0.kind == .scriptCommand }!)
+
+        XCTAssertEqual(
+            model.availableActions,
+            [.open, .editScript, .showInFinder, .copyScriptContents, .deleteScript]
+        )
+    }
+
+    func testEditScriptActionOpensPrefilledForm() throws {
+        try writeScript(
+            "edit-me.sh",
+            header: "# @raycast.title Edit Me\n# @raycast.mode inline\n# @raycast.packageName Tools\n# @raycast.description Tweak things\n# @raycast.argument1 { \"placeholder\": \"Target\" }",
+            body: "echo edit"
+        )
+        let model = makeModel()
+        waitForScripts(in: model, query: "edit me")
+        model.select(index: model.results.firstIndex { $0.kind == .scriptCommand }!)
+
+        model.perform(.editScript)
+
+        XCTAssertEqual(model.screen, .createScript)
+        XCTAssertEqual(
+            model.editingScriptURL?.resolvingSymlinksInPath(),
+            directory.appendingPathComponent("edit-me.sh").resolvingSymlinksInPath()
+        )
+        XCTAssertEqual(model.scriptDraft.title, "Edit Me")
+        XCTAssertEqual(model.scriptDraft.mode, .inline)
+        XCTAssertEqual(model.scriptDraft.packageName, "Tools")
+        XCTAssertEqual(model.scriptDraft.description, "Tweak things")
+        XCTAssertEqual(model.scriptDraft.argumentPlaceholders, ["Target"])
+    }
+
+    func testSaveEditedScriptRewritesFileAndReturnsToSearch() throws {
+        try writeScript("rename.sh", header: "# @raycast.title Old Name\n# @raycast.mode compact", body: "echo body-stays")
+        let model = makeModel()
+        waitForScripts(in: model, query: "old name")
+        model.select(index: model.results.firstIndex { $0.kind == .scriptCommand }!)
+
+        model.perform(.editScript)
+        model.scriptDraft.title = "New Name"
+        model.scriptDraft.mode = .silent
+        model.saveScriptDraft(andOpen: false)
+
+        XCTAssertEqual(model.screen, .search)
+        XCTAssertEqual(model.query, "New Name")
+        XCTAssertNil(model.editingScriptURL)
+        XCTAssertNil(model.createScriptError)
+        XCTAssertTrue(model.results.contains { $0.title == "New Name" && $0.kind == .scriptCommand })
+
+        let url = directory.appendingPathComponent("rename.sh")
+        let contents = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(contents.contains("echo body-stays"), "script body must survive an edit")
+        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: url.path))
+        let parsed = ScriptMetadataParser.parse(contents: contents, url: url)
+        XCTAssertEqual(parsed?.title, "New Name")
+        XCTAssertEqual(parsed?.mode, .silent)
+    }
+
+    func testDeleteScriptRequiresConfirmationAndRemovesFile() throws {
+        try writeScript("doomed.sh", header: "# @raycast.title Doomed Script", body: "echo bye")
+        let model = makeModel()
+        waitForScripts(in: model, query: "doomed")
+        model.select(index: model.results.firstIndex { $0.kind == .scriptCommand }!)
+        let url = directory.appendingPathComponent("doomed.sh")
+
+        model.perform(.deleteScript)
+        XCTAssertEqual(model.pendingDeletion?.title, "Doomed Script")
+
+        model.handleEscape()
+        XCTAssertNil(model.pendingDeletion)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path), "escape must not delete the file")
+
+        model.perform(.deleteScript)
+        model.handleSubmit()
+        XCTAssertNil(model.pendingDeletion)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+        XCTAssertFalse(model.results.contains { $0.kind == .scriptCommand && $0.title == "Doomed Script" })
     }
 }

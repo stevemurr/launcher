@@ -97,6 +97,23 @@ final class CalculatorEngineTests: XCTestCase {
         XCTAssertEqual(CalculatorEngine.evaluate("5+5")?.resultLabel, "Ten")
         XCTAssertEqual(CalculatorEngine.evaluate("100+23")?.resultLabel, "One Hundred Twenty-Three")
     }
+
+    func testOversizedInputIsRejectedWithoutCrashing() {
+        // Guards against a stack overflow from pathological input: the length
+        // cap short-circuits before tokenizing/parsing ever runs.
+        XCTAssertNil(CalculatorEngine.evaluate(String(repeating: "(", count: 10_000)))
+    }
+
+    func testDeeplyNestedParensAreRejectedWithoutCrashing() {
+        // Under the 256-char length cap but past the parser's recursion-depth
+        // guard, so this exercises the depth guard rather than the length cap.
+        XCTAssertNil(CalculatorEngine.evaluate(String(repeating: "(", count: 130)))
+    }
+
+    func testModestlyNestedParensStillEvaluate() {
+        // Sanity check that the depth guard doesn't over-restrict normal use.
+        XCTAssertEqual(result("((2+3)*4)"), "20")
+    }
 }
 
 final class LauncherModelCalculatorTests: XCTestCase {

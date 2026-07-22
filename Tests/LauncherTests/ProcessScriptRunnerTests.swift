@@ -121,6 +121,26 @@ final class ProcessScriptRunnerTests: XCTestCase {
         XCTAssertTrue(sawOutputBeforeCompletion, "final output must precede completion")
     }
 
+    func testBackgroundedDescendantDoesNotBlockCompletion() throws {
+        // The direct child (the shell script) exits almost immediately, but
+        // it leaves behind a descendant that inherits the shared
+        // stdout/stderr pipe and keeps its write end open for well past the
+        // assertion window below. A blocking drain (readToEnd, which waits
+        // for EOF on the pipe) would wait for that descendant to exit too,
+        // hanging completion — and, transitively, isRunning/cancel() from
+        // the main thread, since they synchronize on the same serial queue
+        // — far past this timeout. The fix drains only what's already
+        // buffered, non-blockingly, so completion should arrive almost
+        // immediately regardless of the lingering descendant.
+        let script = try writeScript("background.sh", body: "echo done\nsleep 20 &")
+
+        let run = runToCompletion(script, timeout: 4)
+
+        XCTAssertEqual(run.result, .success)
+        XCTAssertTrue(run.output.contains("done"))
+        XCTAssertFalse(runner.isRunning)
+    }
+
     func testNonExecutableScriptFallsBackToBash() throws {
         let script = try writeScript("plain.sh", body: "echo via-bash", executable: false)
 
@@ -147,6 +167,25 @@ final class ProcessScriptRunnerTests: XCTestCase {
 
         runner.cancel()
         wait(for: [done], timeout: 8)
+    }
+
+    func testConsecutiveRunsReuseRunnerCleanly() throws {
+        // Guards against the runner getting stuck "busy" (or a completion
+        // handler clobbering the wrong run's state) after a run finishes —
+        // a fresh run() right after completion must be accepted and behave
+        // normally.
+        let first = try writeScript("first.sh", body: "echo one")
+        let second = try writeScript("second.sh", body: "echo two")
+
+        let firstRun = runToCompletion(first)
+        XCTAssertEqual(firstRun.result, .success)
+        XCTAssertTrue(firstRun.output.contains("one"))
+        XCTAssertFalse(runner.isRunning)
+
+        let secondRun = runToCompletion(second)
+        XCTAssertEqual(secondRun.result, .success)
+        XCTAssertTrue(secondRun.output.contains("two"))
+        XCTAssertFalse(runner.isRunning)
     }
 
     func testArgumentsArriveAsPositionalParameters() throws {

@@ -20,8 +20,16 @@ struct LauncherRootView: View {
                 }
             }
 
-            if model.screen == .search, model.isActionsPresented, model.pendingRun == nil {
+            if model.screen == .search, model.isActionsPresented, model.pendingRun == nil, model.pendingDeletion == nil,
+               !model.isOpenWithPresented {
                 ActionsPalette(model: model)
+                    .padding(.trailing, 8)
+                    .padding(.bottom, 45)
+                    .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .bottomTrailing)))
+            }
+
+            if model.screen == .search, model.isOpenWithPresented {
+                OpenWithPalette(model: model)
                     .padding(.trailing, 8)
                     .padding(.bottom, 45)
                     .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .bottomTrailing)))
@@ -29,6 +37,13 @@ struct LauncherRootView: View {
 
             if model.screen == .search, model.pendingRun != nil {
                 ConfirmRunPalette(model: model)
+                    .padding(.trailing, 8)
+                    .padding(.bottom, 45)
+                    .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .bottomTrailing)))
+            }
+
+            if model.screen == .search, model.pendingDeletion != nil {
+                ConfirmDeletePalette(model: model)
                     .padding(.trailing, 8)
                     .padding(.bottom, 45)
                     .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .bottomTrailing)))
@@ -49,8 +64,10 @@ struct LauncherRootView: View {
                 .stroke(Color.launcherSeparator.opacity(0.82), lineWidth: 1)
         }
         .animation(.easeOut(duration: 0.12), value: model.isActionsPresented)
+        .animation(.easeOut(duration: 0.12), value: model.isOpenWithPresented)
         .animation(.easeOut(duration: 0.12), value: model.isRunPalettePresented)
         .animation(.easeOut(duration: 0.12), value: model.pendingRun)
+        .animation(.easeOut(duration: 0.12), value: model.pendingDeletion)
     }
 }
 
@@ -68,6 +85,9 @@ private struct LauncherSearchView: View {
                 ScriptOutputPanel(model: model)
                     .padding(8)
                     .frame(maxHeight: .infinity)
+            } else if model.isFileBrowsing {
+                FileBrowserList(model: model)
+                    .frame(maxHeight: .infinity)
             } else {
                 resultsList
                     .frame(maxHeight: .infinity)
@@ -82,10 +102,26 @@ private struct LauncherSearchView: View {
 
     private var searchHeader: some View {
         HStack(spacing: 12) {
+            if model.browseSession != nil {
+                Button {
+                    model.ascendOrExitBrowse()
+                } label: {
+                    Image(systemName: "arrow.left")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(Color.secondary)
+                        .frame(width: 28, height: 28)
+                        .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 7))
+                }
+                .buttonStyle(.plain)
+                .help("Back (Esc)")
+                .accessibilityIdentifier("header.back")
+            }
+
             LauncherSearchField(
                 text: $model.query,
                 focusToken: model.focusToken,
                 isFocusTarget: model.focusTarget == .search,
+                placeholder: model.searchFieldPlaceholder,
                 onFocus: { model.noteFocus(.search) },
                 onCommand: handle
             )
@@ -199,19 +235,7 @@ private struct LauncherSearchView: View {
     }
 
     private func sectionHeader(_ title: String, showsProgress: Bool) -> some View {
-        HStack {
-            Text(title)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(Color.secondary)
-            Spacer()
-            if showsProgress {
-                ProgressView()
-                    .controlSize(.small)
-                    .accessibilityLabel("Indexing applications")
-            }
-        }
-        .padding(.horizontal, 16)
-        .frame(height: 36)
+        ListSectionHeader(title: title, showsProgress: showsProgress)
     }
 
     private var footer: some View {
@@ -281,6 +305,7 @@ private struct LauncherSearchView: View {
             .accessibilityIdentifier("footer.actions")
         }
         .padding(.horizontal, 12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.launcherControlSurface.opacity(0.20))
     }
 
@@ -296,6 +321,22 @@ private struct LauncherSearchView: View {
         case .focusPrevious: model.handleFocusPrevious()
         case .toggleRunPalette: model.toggleRunPalette()
         case .toggleOutput: model.toggleOutputExpanded()
+        case .editScript: model.beginEditingSelectedScript()
+        case .deleteScript: model.requestDeletingSelectedScript()
+        case .openWith:
+            if model.isOpenWithPresented {
+                model.confirmOpenWith()
+            } else if model.availableActions.contains(.openWith) {
+                model.perform(.openWith)
+            } else {
+                model.handleSubmit()
+            }
+        case .quickLook:
+            if model.availableActions.contains(.quickLook) { model.perform(.quickLook) }
+        case .showInFinder:
+            if model.availableActions.contains(.showInFinder) { model.perform(.showInFinder) }
+        case .copyPath:
+            if model.availableActions.contains(.copyPath) { model.perform(.copyPath) }
         }
     }
 
@@ -306,6 +347,8 @@ private struct LauncherSearchView: View {
         case .launcherSetting: item.destination == .createScript ? "Open Command" : "Open Launcher Settings"
         case .calculator: "Copy Answer"
         case .scriptCommand: "Run Script"
+        case .file: "Open File"
+        case .directory: item.id == "file.icloud" ? "Open iCloud" : "Open Directory"
         }
     }
 }
@@ -490,12 +533,15 @@ private struct ActionsPalette: View {
                     .frame(height: 40)
                     .background {
                         RoundedRectangle(cornerRadius: 9, style: .continuous)
-                            .fill(index == 0 ? Color.primary.opacity(0.085) : Color.clear)
+                            .fill(index == model.actionsSelectionIndex ? Color.primary.opacity(0.085) : Color.clear)
                     }
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .padding(.horizontal, 7)
+                .onHover { hovering in
+                    if hovering { model.actionsSelectionIndex = index }
+                }
                 .accessibilityIdentifier("action.\(action.rawValue)")
             }
 
@@ -523,6 +569,8 @@ private struct ActionsPalette: View {
             return model.selectedItem?.destination == .createScript ? "Open Command" : "Open Launcher Settings"
         case .calculator: return "Copy Answer"
         case .scriptCommand: return "Run Script"
+        case .file: return "Open File"
+        case .directory: return model.selectedItem?.id == "file.icloud" ? "Open iCloud" : "Open Directory"
         case nil: return action.title
         }
     }

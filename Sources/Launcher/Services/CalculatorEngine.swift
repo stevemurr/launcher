@@ -11,6 +11,7 @@ struct Calculation: Equatable {
 enum CalculatorEngine {
     static func evaluate(_ input: String) -> Calculation? {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count <= 256 else { return nil }
         guard !trimmed.isEmpty,
               let tokens = tokenize(trimmed),
               qualifiesAsCalculation(tokens) else { return nil }
@@ -159,6 +160,12 @@ enum CalculatorEngine {
         let tokens: [Token]
         var index = 0
 
+        /// Bounds recursive-descent depth so pathological input (deeply nested
+        /// parens or long unary chains) fails gracefully instead of overflowing
+        /// the call stack. Real expressions never nest anywhere near this deep.
+        private var depth = 0
+        private static let maxDepth = 128
+
         var isAtEnd: Bool { index >= tokens.count }
 
         private var current: Token? {
@@ -170,6 +177,10 @@ enum CalculatorEngine {
         }
 
         mutating func parseExpression() throws -> Double {
+            depth += 1
+            defer { depth -= 1 }
+            guard depth <= Self.maxDepth else { throw ParseError() }
+
             var value = try parseTerm()
             while case let .op(symbol) = current, symbol == "+" || symbol == "-" {
                 index += 1
@@ -205,10 +216,16 @@ enum CalculatorEngine {
         private mutating func parseFactor() throws -> Double {
             if case .op("-") = current {
                 index += 1
+                depth += 1
+                defer { depth -= 1 }
+                guard depth <= Self.maxDepth else { throw ParseError() }
                 return -(try parseFactor())
             }
             if case .op("+") = current {
                 index += 1
+                depth += 1
+                defer { depth -= 1 }
+                guard depth <= Self.maxDepth else { throw ParseError() }
                 return try parseFactor()
             }
             return try parsePower()
