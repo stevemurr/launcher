@@ -267,6 +267,11 @@ final class LauncherModel: ObservableObject {
         }
     }
 
+    func reindex() {
+        guard !isLoading else { return }
+        loadApplications()
+    }
+
     func prepareForPresentation(screen: LauncherScreen = .search) {
         self.screen = screen
         isActionsPresented = false

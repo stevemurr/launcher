@@ -340,6 +340,28 @@ final class LauncherUITests: XCTestCase {
         add(attachment)
     }
 
+    func testSettingsChromeAndReindexStayVisible() {
+        app.buttons["header.settings"].click()
+
+        let back = app.buttons["settings.back"]
+        let reindex = app.buttons["settings.reindex"]
+        let done = app.buttons["settings.done"]
+        XCTAssertTrue(back.waitForExistence(timeout: 2))
+        XCTAssertTrue(reindex.waitForExistence(timeout: 2))
+        XCTAssertTrue(done.waitForExistence(timeout: 2))
+        XCTAssertTrue(back.isHittable)
+        XCTAssertTrue(reindex.isHittable)
+        XCTAssertTrue(done.isHittable)
+
+        reindex.click()
+        XCTAssertTrue(reindex.waitForExistence(timeout: 2))
+
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = "Settings layout with reindex"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
     func testDarkAppearanceSupportsSearch() {
         let search = app.textFields["launcher.search"]
         search.click()

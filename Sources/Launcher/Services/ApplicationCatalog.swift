@@ -8,18 +8,35 @@ enum ApplicationCatalog {
             fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Applications", isDirectory: true)
         ]
 
-        let resourceKeys: [URLResourceKey] = [.isDirectoryKey, .isApplicationKey, .nameKey]
+        return discoverApplications(in: roots, fileManager: fileManager)
+    }
+
+    static func discoverApplications(
+        in roots: [URL],
+        fileManager: FileManager = .default
+    ) -> [ApplicationRecord] {
+        let resourceKeys: [URLResourceKey] = [.isHiddenKey]
         var recordsByID: [String: ApplicationRecord] = [:]
 
         for root in roots where fileManager.fileExists(atPath: root.path) {
+            let standardizedRoot = root.standardizedFileURL
             guard let enumerator = fileManager.enumerator(
                 at: root,
                 includingPropertiesForKeys: resourceKeys,
-                options: [.skipsHiddenFiles, .skipsPackageDescendants]
+                options: [.skipsPackageDescendants]
             ) else { continue }
 
             while let url = enumerator.nextObject() as? URL {
-                guard url.pathExtension.caseInsensitiveCompare("app") == .orderedSame else { continue }
+                let isApplication = url.pathExtension.caseInsensitiveCompare("app") == .orderedSame
+                let isRootLevel = url.deletingLastPathComponent().standardizedFileURL == standardizedRoot
+                let isHidden = (try? url.resourceValues(forKeys: [.isHiddenKey]))?.isHidden == true
+
+                if isHidden, !(isApplication && isRootLevel) {
+                    enumerator.skipDescendants()
+                    continue
+                }
+
+                guard isApplication else { continue }
                 enumerator.skipDescendants()
 
                 let bundle = Bundle(url: url)

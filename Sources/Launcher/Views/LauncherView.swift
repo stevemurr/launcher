@@ -600,6 +600,25 @@ private struct LauncherSettingsView: View {
 
                 Spacer()
 
+                Button {
+                    model.reindex()
+                } label: {
+                    HStack(spacing: 5) {
+                        if model.isLoading {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                        Text(model.isLoading ? "Indexing…" : "Reindex")
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(model.isLoading)
+                .help("Reindex applications and script commands")
+                .accessibilityIdentifier("settings.reindex")
+
                 KeyCap("Esc")
             }
             .padding(.horizontal, 16)
@@ -607,166 +626,168 @@ private struct LauncherSettingsView: View {
 
             Divider().opacity(0.65)
 
-            VStack(alignment: .leading, spacing: 14) {
-                Text("GENERAL")
-                    .font(.system(size: 12, weight: .semibold))
-                    .tracking(0.5)
-                    .foregroundStyle(Color.secondary)
-
-                VStack(spacing: 0) {
-                    HStack(spacing: 16) {
-                        ZStack {
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .fill(Color.primary.opacity(0.075))
-                            Image(systemName: "command")
-                                .font(.system(size: 18, weight: .semibold))
-                                .foregroundStyle(Color.secondary)
-                        }
-                        .frame(width: 40, height: 40)
-
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("Launcher hotkey")
-                                .font(.system(size: 15, weight: .semibold))
-                            Text("Show or hide Launcher from anywhere")
-                                .font(.system(size: 13))
-                                .foregroundStyle(Color.secondary)
-                        }
-
-                        Spacer()
-
-                        HotKeyRecorder(hotKey: settings.hotKey, onChange: model.updateHotKey)
-                            .frame(width: 148, height: 34)
-                    }
-                    .padding(14)
-                    .frame(height: 74)
-
-                    Divider().padding(.leading, 70)
-
-                    HStack(spacing: 16) {
-                        ZStack {
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .fill(Color.primary.opacity(0.075))
-                            Image(systemName: "power")
-                                .font(.system(size: 18, weight: .semibold))
-                                .foregroundStyle(Color.secondary)
-                        }
-                        .frame(width: 40, height: 40)
-
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("Start at login")
-                                .font(.system(size: 15, weight: .semibold))
-                            Text("Open Launcher automatically after you log in")
-                                .font(.system(size: 13))
-                                .foregroundStyle(Color.secondary)
-                        }
-
-                        Spacer()
-
-                        Toggle("Start at login", isOn: Binding(
-                            get: { model.launchAtLogin },
-                            set: { model.setLaunchAtLogin($0) }
-                        ))
-                        .labelsHidden()
-                        .toggleStyle(.switch)
-                        .controlSize(.small)
-                        .accessibilityIdentifier("settings.startAtLogin")
-                    }
-                    .padding(14)
-                    .frame(height: 74)
-
-                    Divider().padding(.leading, 70)
-
-                    HStack(spacing: 16) {
-                        ZStack {
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .fill(Color.primary.opacity(0.075))
-                            Image(systemName: "folder")
-                                .font(.system(size: 18, weight: .semibold))
-                                .foregroundStyle(Color.secondary)
-                        }
-                        .frame(width: 40, height: 40)
-
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("Scripts folder")
-                                .font(.system(size: 15, weight: .semibold))
-                            Text((settings.scriptsDirectory.path as NSString).abbreviatingWithTildeInPath)
-                                .font(.system(size: 13))
-                                .foregroundStyle(Color.secondary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                        }
-
-                        Spacer()
-
-                        Button("Reveal") {
-                            let directory = model.effectiveScriptsDirectory
-                            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-                            NSWorkspace.shared.activateFileViewerSelecting([directory])
-                        }
-                        .controlSize(.small)
-                        .accessibilityIdentifier("settings.scriptsDir.reveal")
-
-                        Button("Change…") {
-                            let panel = NSOpenPanel()
-                            panel.canChooseDirectories = true
-                            panel.canChooseFiles = false
-                            panel.allowsMultipleSelection = false
-                            panel.directoryURL = settings.scriptsDirectory
-                            if panel.runModal() == .OK, let url = panel.url {
-                                model.updateScriptsDirectory(url)
-                            }
-                        }
-                        .controlSize(.small)
-                        .accessibilityIdentifier("settings.scriptsDir.change")
-                    }
-                    .padding(14)
-                    .frame(height: 74)
-                }
-                .background(Color.launcherControlSurface.opacity(0.62), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 13, style: .continuous)
-                        .stroke(Color.launcherSeparator.opacity(0.72), lineWidth: 1)
-                }
-
-                if let error = settings.hotKeyError {
-                    Label(error, systemImage: "exclamationmark.triangle.fill")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(Color.red)
-                        .accessibilityIdentifier("settings.hotkey.error")
-                } else if let error = model.launchAtLoginError {
-                    Label(error, systemImage: "exclamationmark.triangle.fill")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(Color.red)
-                        .accessibilityIdentifier("settings.startAtLogin.error")
-                } else {
-                    Text("Click the shortcut, then press a new key combination.")
-                        .font(.system(size: 12))
+            Group {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("GENERAL")
+                        .font(.system(size: 12, weight: .semibold))
+                        .tracking(0.5)
                         .foregroundStyle(Color.secondary)
-                }
 
-                Text("KEYBOARD")
-                    .font(.system(size: 12, weight: .semibold))
-                    .tracking(0.5)
-                    .foregroundStyle(Color.secondary)
-                    .padding(.top, 8)
+                    VStack(spacing: 0) {
+                        HStack(spacing: 16) {
+                            ZStack {
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .fill(Color.primary.opacity(0.075))
+                                Image(systemName: "command")
+                                    .font(.system(size: 18, weight: .semibold))
+                                    .foregroundStyle(Color.secondary)
+                            }
+                            .frame(width: 40, height: 40)
 
-                VStack(spacing: 0) {
-                    ShortcutReferenceRow(title: "Move through results", keys: ["↑", "↓"])
-                    Divider().padding(.leading, 14)
-                    ShortcutReferenceRow(title: "Open selected result", keys: ["↩"])
-                    Divider().padding(.leading, 14)
-                    ShortcutReferenceRow(title: "Show actions", keys: ["⌘", "K"])
-                }
-                .background(Color.launcherControlSurface.opacity(0.62), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 13, style: .continuous)
-                        .stroke(Color.launcherSeparator.opacity(0.72), lineWidth: 1)
-                }
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Launcher hotkey")
+                                    .font(.system(size: 15, weight: .semibold))
+                                Text("Show or hide Launcher from anywhere")
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(Color.secondary)
+                            }
 
-                Spacer()
+                            Spacer()
+
+                            HotKeyRecorder(hotKey: settings.hotKey, onChange: model.updateHotKey)
+                                .frame(width: 148, height: 34)
+                        }
+                        .padding(.horizontal, 14)
+                        .frame(height: 62)
+
+                        Divider().padding(.leading, 70)
+
+                        HStack(spacing: 16) {
+                            ZStack {
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .fill(Color.primary.opacity(0.075))
+                                Image(systemName: "power")
+                                    .font(.system(size: 18, weight: .semibold))
+                                    .foregroundStyle(Color.secondary)
+                            }
+                            .frame(width: 40, height: 40)
+
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Start at login")
+                                    .font(.system(size: 15, weight: .semibold))
+                                Text("Open Launcher automatically after you log in")
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(Color.secondary)
+                            }
+
+                            Spacer()
+
+                            Toggle("Start at login", isOn: Binding(
+                                get: { model.launchAtLogin },
+                                set: { model.setLaunchAtLogin($0) }
+                            ))
+                            .labelsHidden()
+                            .toggleStyle(.switch)
+                            .controlSize(.small)
+                            .accessibilityIdentifier("settings.startAtLogin")
+                        }
+                        .padding(.horizontal, 14)
+                        .frame(height: 62)
+
+                        Divider().padding(.leading, 70)
+
+                        HStack(spacing: 16) {
+                            ZStack {
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .fill(Color.primary.opacity(0.075))
+                                Image(systemName: "folder")
+                                    .font(.system(size: 18, weight: .semibold))
+                                    .foregroundStyle(Color.secondary)
+                            }
+                            .frame(width: 40, height: 40)
+
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Scripts folder")
+                                    .font(.system(size: 15, weight: .semibold))
+                                Text((settings.scriptsDirectory.path as NSString).abbreviatingWithTildeInPath)
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(Color.secondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                            }
+
+                            Spacer()
+
+                            Button("Reveal") {
+                                let directory = model.effectiveScriptsDirectory
+                                try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                                NSWorkspace.shared.activateFileViewerSelecting([directory])
+                            }
+                            .controlSize(.small)
+                            .accessibilityIdentifier("settings.scriptsDir.reveal")
+
+                            Button("Change…") {
+                                let panel = NSOpenPanel()
+                                panel.canChooseDirectories = true
+                                panel.canChooseFiles = false
+                                panel.allowsMultipleSelection = false
+                                panel.directoryURL = settings.scriptsDirectory
+                                if panel.runModal() == .OK, let url = panel.url {
+                                    model.updateScriptsDirectory(url)
+                                }
+                            }
+                            .controlSize(.small)
+                            .accessibilityIdentifier("settings.scriptsDir.change")
+                        }
+                        .padding(.horizontal, 14)
+                        .frame(height: 62)
+                    }
+                    .background(Color.launcherControlSurface.opacity(0.62), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 13, style: .continuous)
+                            .stroke(Color.launcherSeparator.opacity(0.72), lineWidth: 1)
+                    }
+
+                    if let error = settings.hotKeyError {
+                        Label(error, systemImage: "exclamationmark.triangle.fill")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(Color.red)
+                            .accessibilityIdentifier("settings.hotkey.error")
+                    } else if let error = model.launchAtLoginError {
+                        Label(error, systemImage: "exclamationmark.triangle.fill")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(Color.red)
+                            .accessibilityIdentifier("settings.startAtLogin.error")
+                    } else {
+                        Text("Click the shortcut, then press a new key combination.")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Color.secondary)
+                    }
+
+                    Text("KEYBOARD")
+                        .font(.system(size: 12, weight: .semibold))
+                        .tracking(0.5)
+                        .foregroundStyle(Color.secondary)
+                        .padding(.top, 8)
+
+                    VStack(spacing: 0) {
+                        ShortcutReferenceRow(title: "Move through results", keys: ["↑", "↓"])
+                        Divider().padding(.leading, 14)
+                        ShortcutReferenceRow(title: "Open selected result", keys: ["↩"])
+                        Divider().padding(.leading, 14)
+                        ShortcutReferenceRow(title: "Show actions", keys: ["⌘", "K"])
+                    }
+                    .background(Color.launcherControlSurface.opacity(0.62), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 13, style: .continuous)
+                            .stroke(Color.launcherSeparator.opacity(0.72), lineWidth: 1)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 22)
+                .padding(.vertical, 12)
             }
-            .padding(.horizontal, 22)
-            .padding(.top, 20)
+            .frame(maxHeight: .infinity, alignment: .top)
 
             Divider().opacity(0.65)
 
@@ -803,7 +824,7 @@ private struct ShortcutReferenceRow: View {
             }
         }
         .padding(.horizontal, 14)
-        .frame(height: 38)
+        .frame(height: 36)
     }
 }
 
