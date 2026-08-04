@@ -22,7 +22,7 @@ final class ScriptMetadataParserTests: XCTestCase {
         """)
 
         XCTAssertEqual(script?.title, "Youtube Download Audio")
-        XCTAssertEqual(script?.mode, .compact)
+        XCTAssertEqual(script?.mode, .normal)
         XCTAssertEqual(script?.packageName, "Media")
         XCTAssertEqual(script?.description, "Download audio from a YouTube URL")
         XCTAssertEqual(script?.needsConfirmation, true)
@@ -39,7 +39,7 @@ final class ScriptMetadataParserTests: XCTestCase {
         """)
 
         XCTAssertEqual(script?.title, "Mixed")
-        XCTAssertEqual(script?.mode, .inline)
+        XCTAssertEqual(script?.mode, .normal)
         XCTAssertEqual(script?.packageName, "Tools")
     }
 
@@ -62,15 +62,35 @@ final class ScriptMetadataParserTests: XCTestCase {
 
     func testDefaults() {
         let script = parse("# @raycast.title Bare")
-        XCTAssertEqual(script?.mode, .fullOutput)
+        XCTAssertEqual(script?.mode, .normal)
         XCTAssertNil(script?.packageName)
         XCTAssertNil(script?.description)
         XCTAssertEqual(script?.needsConfirmation, false)
         XCTAssertEqual(script?.arguments, [])
     }
 
-    func testUnknownModeFallsBackToFullOutput() {
-        XCTAssertEqual(parse("# @raycast.title X\n# @raycast.mode bogus")?.mode, .fullOutput)
+    func testUnknownModeFallsBackToNormal() {
+        XCTAssertEqual(parse("# @raycast.title X\n# @raycast.mode bogus")?.mode, .normal)
+    }
+
+    func testLegacyModeAliasesCollapseToNormal() {
+        for legacy in ["fullOutput", "compact", "inline"] {
+            XCTAssertEqual(
+                parse("# @raycast.title X\n# @raycast.mode \(legacy)")?.mode,
+                .normal,
+                "\(legacy) should still parse as a normal script"
+            )
+        }
+    }
+
+    func testSilentModeIsCaseInsensitive() {
+        for spelling in ["silent", "Silent", "SILENT"] {
+            XCTAssertEqual(
+                parse("# @raycast.title X\n# @raycast.mode \(spelling)")?.mode,
+                .silent,
+                "\(spelling) should parse as silent"
+            )
+        }
     }
 
     func testNeedsConfirmationVariants() {

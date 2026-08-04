@@ -7,14 +7,17 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		042AA99859E02EEA18AFC12D /* LauncherStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 953AD0B06FE7658A0C361BB1 /* LauncherStyle.swift */; };
 		05C8191A6E24D2B2D09256D1 /* LauncherSearchField.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55A099A844B590130F3650B9 /* LauncherSearchField.swift */; };
 		0810007FA5B829870EA59EEA /* LauncherUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC585299115FB38609AB5E20 /* LauncherUITests.swift */; };
 		186A63C2A6DA9494480A3961 /* QuickLookController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D368412C1CCFBA40D8AFCC0 /* QuickLookController.swift */; };
 		22ED689DD4A63D715867FA8D /* LauncherModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 959701A99FA58E1D01A1DE54 /* LauncherModel.swift */; };
 		24C3A77AA0CE567ED036B3AB /* ScriptTemplateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DDD9C9CA91E8C5CB6FC2B07 /* ScriptTemplateTests.swift */; };
 		2ECACD85B0177072B7F4FF3F /* LauncherView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78CA243E2DE30FA30AD048FA /* LauncherView.swift */; };
+		345416DE7971D249E1271175 /* LauncherModelActivationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FB3D185BDBC754C45F2C3F6 /* LauncherModelActivationTests.swift */; };
 		5564804FBFF5BA3D4B05D5B7 /* LoginItemManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6806BDFD401F2AFAD4D08BA8 /* LoginItemManager.swift */; };
 		59A1721A35E0C1EEE87855AD /* ScriptMetadataParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = E44077ACF2B963B94590B078 /* ScriptMetadataParser.swift */; };
+		681691F840D52E4C3A79EF75 /* LauncherLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D27CEDA49CE3104F1F77F73 /* LauncherLayoutTests.swift */; };
 		76F7B695F92592DF8586D322 /* ScriptTemplate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 360EE4294641E5CDD2AACB69 /* ScriptTemplate.swift */; };
 		779D9CC11716ADEF8468B29B /* CreateScriptView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75B0EA5492FD084DEF198FEC /* CreateScriptView.swift */; };
 		7D6E6BF9A82239624C1F54CE /* ScriptCommandEditTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2A28DE623FE74BB2FC56AC2 /* ScriptCommandEditTests.swift */; };
@@ -88,10 +91,13 @@
 		8ACA839D941EA5C60F07DFA0 /* FileBrowserEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileBrowserEngineTests.swift; sourceTree = "<group>"; };
 		8C8179AFAF0BE5421D6414F9 /* LauncherModelFileBrowserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherModelFileBrowserTests.swift; sourceTree = "<group>"; };
 		8D368412C1CCFBA40D8AFCC0 /* QuickLookController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickLookController.swift; sourceTree = "<group>"; };
+		8FB3D185BDBC754C45F2C3F6 /* LauncherModelActivationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherModelActivationTests.swift; sourceTree = "<group>"; };
 		90295A2700AC7CD5C55F7BE8 /* HotKeyManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotKeyManager.swift; sourceTree = "<group>"; };
 		92E11DDA382BE4016522B31D /* LauncherItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherItem.swift; sourceTree = "<group>"; };
+		953AD0B06FE7658A0C361BB1 /* LauncherStyle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherStyle.swift; sourceTree = "<group>"; };
 		959701A99FA58E1D01A1DE54 /* LauncherModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherModel.swift; sourceTree = "<group>"; };
 		98FF4BD600895A550C41007B /* HotKeyRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotKeyRecorder.swift; sourceTree = "<group>"; };
+		9D27CEDA49CE3104F1F77F73 /* LauncherLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherLayoutTests.swift; sourceTree = "<group>"; };
 		A035320B669625CDA8270E83 /* HotKey.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotKey.swift; sourceTree = "<group>"; };
 		A3CD275177CC43FB2971B93F /* SearchMatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchMatcher.swift; sourceTree = "<group>"; };
 		A7687ECD124A9C4AB58CDE5B /* LauncherUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LauncherUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -139,6 +145,8 @@
 				DD2385441792714C3385DD28 /* CalculatorEngineTests.swift */,
 				8ACA839D941EA5C60F07DFA0 /* FileBrowserEngineTests.swift */,
 				22FC720CE493F39081F98814 /* HotKeyTests.swift */,
+				9D27CEDA49CE3104F1F77F73 /* LauncherLayoutTests.swift */,
+				8FB3D185BDBC754C45F2C3F6 /* LauncherModelActivationTests.swift */,
 				8C8179AFAF0BE5421D6414F9 /* LauncherModelFileBrowserTests.swift */,
 				23A633A776AC0D79DECF9AD0 /* LauncherModelScriptTests.swift */,
 				B8FF128CD13583C6368BA16A /* LoginItemTests.swift */,
@@ -159,6 +167,7 @@
 				68DD0F140A6AA3E9FFE267AA /* FileBrowserViews.swift */,
 				98FF4BD600895A550C41007B /* HotKeyRecorder.swift */,
 				55A099A844B590130F3650B9 /* LauncherSearchField.swift */,
+				953AD0B06FE7658A0C361BB1 /* LauncherStyle.swift */,
 				78CA243E2DE30FA30AD048FA /* LauncherView.swift */,
 				EAE88098541CEEB0A11C5D65 /* ScriptCommandViews.swift */,
 				265DBA07B8910347D94016D1 /* VisualEffectView.swift */,
@@ -387,6 +396,7 @@
 				22ED689DD4A63D715867FA8D /* LauncherModel.swift in Sources */,
 				05C8191A6E24D2B2D09256D1 /* LauncherSearchField.swift in Sources */,
 				97E205D4EEC7B758428B8969 /* LauncherSettings.swift in Sources */,
+				042AA99859E02EEA18AFC12D /* LauncherStyle.swift in Sources */,
 				2ECACD85B0177072B7F4FF3F /* LauncherView.swift in Sources */,
 				5564804FBFF5BA3D4B05D5B7 /* LoginItemManager.swift in Sources */,
 				186A63C2A6DA9494480A3961 /* QuickLookController.swift in Sources */,
@@ -409,6 +419,8 @@
 				ECC4C2C41A5D0867547360C4 /* CalculatorEngineTests.swift in Sources */,
 				C69615A275E99373C79150BD /* FileBrowserEngineTests.swift in Sources */,
 				D5F89921200598D3909B05B8 /* HotKeyTests.swift in Sources */,
+				681691F840D52E4C3A79EF75 /* LauncherLayoutTests.swift in Sources */,
+				345416DE7971D249E1271175 /* LauncherModelActivationTests.swift in Sources */,
 				F00697F53BA583B20761C231 /* LauncherModelFileBrowserTests.swift in Sources */,
 				B223CBCA95451CD251A56423 /* LauncherModelScriptTests.swift in Sources */,
 				ACD761DEB815A677F35E18F6 /* LoginItemTests.swift in Sources */,

@@ -22,4 +22,53 @@ final class HotKeyTests: XCTestCase {
         XCTAssertEqual(hotKey.displayString, "Key 83")
         XCTAssertFalse(hotKey.displayString.contains("(keyCode)"))
     }
+
+    func testHotKeyMatchesForegroundKeyEvent() throws {
+        let event = try XCTUnwrap(
+            NSEvent.keyEvent(
+                with: .keyDown,
+                location: .zero,
+                modifierFlags: [.option, .capsLock],
+                timestamp: 0,
+                windowNumber: 0,
+                context: nil,
+                characters: " ",
+                charactersIgnoringModifiers: " ",
+                isARepeat: false,
+                keyCode: UInt16(kVK_Space)
+            )
+        )
+
+        XCTAssertTrue(HotKey.default.matches(event))
+    }
+
+    func testHotKeyRejectsDifferentForegroundModifiers() throws {
+        let event = try XCTUnwrap(
+            NSEvent.keyEvent(
+                with: .keyDown,
+                location: .zero,
+                modifierFlags: [.option, .command],
+                timestamp: 0,
+                windowNumber: 0,
+                context: nil,
+                characters: " ",
+                charactersIgnoringModifiers: " ",
+                isARepeat: false,
+                keyCode: UInt16(kVK_Space)
+            )
+        )
+
+        XCTAssertFalse(HotKey.default.matches(event))
+    }
+
+    func testPressGateRequiresReleaseBeforeAnotherToggle() {
+        var gate = HotKeyPressGate()
+
+        XCTAssertTrue(gate.press())
+        XCTAssertFalse(gate.press())
+
+        gate.release()
+
+        XCTAssertTrue(gate.press())
+    }
 }

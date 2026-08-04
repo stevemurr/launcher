@@ -3,6 +3,15 @@ import SwiftUI
 
 struct LauncherRootView: View {
     @ObservedObject var model: LauncherModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var panelWidth: CGFloat {
+        model.isOutputPanePresented ? LauncherStyle.expandedPanelWidth : LauncherStyle.panelWidth
+    }
+
+    private var drawerAnimation: Animation? {
+        reduceMotion ? nil : .easeInOut(duration: LauncherStyle.drawerAnimationDuration)
+    }
 
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
@@ -57,10 +66,10 @@ struct LauncherRootView: View {
                     .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .bottomLeading)))
             }
         }
-        .frame(width: 774, height: 512)
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .frame(width: panelWidth, height: LauncherStyle.panelHeight)
+        .clipShape(RoundedRectangle(cornerRadius: LauncherStyle.panelCornerRadius, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: LauncherStyle.panelCornerRadius, style: .continuous)
                 .stroke(Color.launcherSeparator.opacity(0.82), lineWidth: 1)
         }
         .animation(.easeOut(duration: 0.12), value: model.isActionsPresented)
@@ -68,35 +77,61 @@ struct LauncherRootView: View {
         .animation(.easeOut(duration: 0.12), value: model.isRunPalettePresented)
         .animation(.easeOut(duration: 0.12), value: model.pendingRun)
         .animation(.easeOut(duration: 0.12), value: model.pendingDeletion)
+        .animation(drawerAnimation, value: model.isOutputPanePresented)
     }
 }
 
 private struct LauncherSearchView: View {
     @ObservedObject var model: LauncherModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// The results region shrinks so the pane costs less window than its width.
+    private var resultsRegionWidth: CGFloat {
+        model.isOutputPanePresented ? LauncherStyle.drawerResultsWidth : LauncherStyle.panelWidth
+    }
+
+    private var outputPaneTransition: AnyTransition {
+        reduceMotion ? .opacity : .move(edge: .trailing).combined(with: .opacity)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
+            // Header and footer span the whole window so the overlay palettes
+            // stay attached to the controls that trigger them.
             searchHeader
-                .frame(height: 59)
+                .frame(height: LauncherStyle.headerHeight)
 
             Divider().opacity(0.65)
 
-            if model.isOutputExpanded {
-                ScriptOutputPanel(model: model)
-                    .padding(8)
-                    .frame(maxHeight: .infinity)
-            } else if model.isFileBrowsing {
-                FileBrowserList(model: model)
-                    .frame(maxHeight: .infinity)
-            } else {
-                resultsList
-                    .frame(maxHeight: .infinity)
+            HStack(spacing: 0) {
+                Group {
+                    if model.isFileBrowsing {
+                        FileBrowserList(model: model)
+                    } else {
+                        resultsList
+                    }
+                }
+                .frame(width: resultsRegionWidth)
+                .frame(maxHeight: .infinity)
+
+                if model.isOutputPanePresented {
+                    ScriptOutputPane(model: model)
+                        .frame(width: LauncherStyle.outputPaneWidth)
+                        .frame(maxHeight: .infinity)
+                        .overlay(alignment: .leading) {
+                            Rectangle()
+                                .fill(Color.launcherSeparator.opacity(0.65))
+                                .frame(width: 1)
+                        }
+                        .transition(outputPaneTransition)
+                }
             }
+            .frame(maxHeight: .infinity)
 
             Divider().opacity(0.65)
 
             footer
-                .frame(height: 39)
+                .frame(height: LauncherStyle.footerHeight)
         }
     }
 
@@ -225,6 +260,8 @@ private struct LauncherSearchView: View {
                 Text(model.isLoading ? "Indexing installed applications…" : "Search apps, settings, and script commands, or type a calculation like 5+5")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(Color.secondary)
+                    // The results region narrows to 526 pt with the pane open.
+                    .lineLimit(1)
                 Spacer()
             }
             .padding(.horizontal, 16)
@@ -240,43 +277,48 @@ private struct LauncherSearchView: View {
 
     private var footer: some View {
         HStack(spacing: 10) {
-            if model.isRunChipVisible, model.scriptRun != nil {
+            Button {
+                model.showSettings()
+            } label: {
+                Image(systemName: "command.square.fill")
+                    .font(.system(size: 16, weight: .semibold))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(Color.secondary.opacity(0.74))
+                    .frame(width: 26, height: 26)
+            }
+            .buttonStyle(.plain)
+            .help("Launcher Settings")
+            .accessibilityIdentifier("footer.settings")
+
+            // The chip now lives as long as its run, so it sits beside the
+            // settings button rather than replacing it.
+            if model.isRunChipVisible {
                 RunChip(model: model)
-            } else {
-                Button {
-                    model.showSettings()
-                } label: {
-                    Image(systemName: "command.square.fill")
-                        .font(.system(size: 16, weight: .semibold))
-                        .symbolRenderingMode(.hierarchical)
-                        .foregroundStyle(Color.secondary.opacity(0.74))
-                        .frame(width: 26, height: 26)
-                }
-                .buttonStyle(.plain)
-                .help("Launcher Settings")
-                .accessibilityIdentifier("footer.settings")
             }
 
             Spacer()
 
-            if model.showMoreAvailable {
-                Button {
-                    model.toggleOutputExpanded()
-                } label: {
-                    HStack(spacing: 5) {
-                        Text(model.isOutputExpanded ? "Show Less" : "Show More")
-                            .font(.system(size: 13, weight: .semibold))
-                        KeyCap(model.isOutputExpanded ? "↑" : "↓")
-                    }
-                    .foregroundStyle(Color.secondary)
+            // Always rendered (disabled when there is nothing to show) so the
+            // footer never reflows when a run starts.
+            Button {
+                model.toggleOutputPane()
+            } label: {
+                HStack(spacing: 5) {
+                    Text("Output")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(model.isOutputPanePresented ? Color.accentColor : Color.secondary)
+                    KeyCap("⌘")
+                    KeyCap("P")
                 }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("footer.showMore")
-
-                Rectangle()
-                    .fill(Color.launcherSeparator)
-                    .frame(width: 1, height: 14)
+                .foregroundStyle(Color.secondary)
             }
+            .buttonStyle(.plain)
+            .help("\(model.isOutputPanePresented ? "Hide" : "Show") Script Output (⌘P)")
+            .accessibilityIdentifier("footer.output")
+
+            Rectangle()
+                .fill(Color.launcherSeparator)
+                .frame(width: 1, height: 14)
 
             if let item = model.selectedItem {
                 Text(primaryActionTitle(for: item))
@@ -320,7 +362,7 @@ private struct LauncherSearchView: View {
         case .focusNext: model.handleFocusNext()
         case .focusPrevious: model.handleFocusPrevious()
         case .toggleRunPalette: model.toggleRunPalette()
-        case .toggleOutput: model.toggleOutputExpanded()
+        case .toggleOutputPane: model.toggleOutputPane()
         case .editScript: model.beginEditingSelectedScript()
         case .deleteScript: model.requestDeletingSelectedScript()
         case .openWith:
@@ -506,7 +548,7 @@ private struct ActionsPalette: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text(model.selectedItem?.title ?? "Actions")
+                Text(model.actionsTarget?.title ?? "Actions")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Color.secondary)
                     .lineLimit(1)
@@ -776,6 +818,8 @@ private struct LauncherSettingsView: View {
                         ShortcutReferenceRow(title: "Open selected result", keys: ["↩"])
                         Divider().padding(.leading, 14)
                         ShortcutReferenceRow(title: "Show actions", keys: ["⌘", "K"])
+                        Divider().padding(.leading, 14)
+                        ShortcutReferenceRow(title: "Show script output", keys: ["⌘", "P"])
                     }
                     .background(Color.launcherControlSurface.opacity(0.62), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
                     .overlay {

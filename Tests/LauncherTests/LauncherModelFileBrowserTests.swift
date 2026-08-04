@@ -104,6 +104,28 @@ final class LauncherModelFileBrowserTests: XCTestCase {
         XCTAssertTrue(model.results.contains { $0.title == "Launcher Settings" })
     }
 
+    func testLateAsyncListingCannotReplaceNewerNormalSearch() {
+        let settings = LauncherSettings(defaults: defaults)
+        settings.save(scriptsDirectory: scriptsDirectory)
+        let model = LauncherModel(
+            settings: settings,
+            isUITesting: false,
+            loginItems: QuietLoginItems()
+        )
+
+        model.query = root.path + "/"
+        model.query = "launcher"
+
+        let settled = expectation(description: "background listing settled")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            XCTAssertFalse(model.isFileBrowsing)
+            XCTAssertEqual(model.query, "launcher")
+            XCTAssertTrue(model.results.contains { $0.title == "Launcher Settings" })
+            settled.fulfill()
+        }
+        wait(for: [settled], timeout: 2)
+    }
+
     func testEscapeInDerivedModeClearsQueryWithoutClosing() {
         var closed = false
         let model = makeModel()
@@ -241,6 +263,23 @@ final class LauncherModelFileBrowserTests: XCTestCase {
         )
     }
 
+    func testShowInFinderDismissesBeforeRevealingItem() {
+        let model = makeModel()
+        model.query = "~/"
+        selectItem(titled: "Notes.txt", in: model)
+        var events: [String] = []
+
+        model.onRequestClose = { events.append("dismiss") }
+        model.fileRevealer = { url in
+            XCTAssertEqual(url.lastPathComponent, "Notes.txt")
+            events.append("reveal")
+        }
+
+        model.perform(.showInFinder)
+
+        XCTAssertEqual(events, ["dismiss", "reveal"])
+    }
+
     // MARK: - Actions palette selection
 
     func testArrowSelectionMovesThroughListing() {
@@ -295,6 +334,39 @@ final class LauncherModelFileBrowserTests: XCTestCase {
         XCTAssertEqual(model.actionsSelectionIndex, 0)
     }
 
+    func testActionsPaletteKeepsTheItemItWasOpenedFor() {
+        let model = makeModel()
+        model.query = "~/"
+        selectItem(titled: "Notes.txt", in: model)
+        model.toggleActions()
+        XCTAssertEqual(model.actionsTarget?.title, "Notes.txt")
+
+        // Simulate a result-row hover changing the live selection behind the
+        // palette after it was presented.
+        model.selectedIndex = model.results.firstIndex { $0.title == "Alpha" }!
+        model.perform(.copyPath)
+
+        let copied = NSPasteboard.general.string(forType: .string).map {
+            URL(fileURLWithPath: $0).resolvingSymlinksInPath().path
+        }
+        XCTAssertEqual(
+            copied,
+            home.appendingPathComponent("Notes.txt").resolvingSymlinksInPath().path
+        )
+    }
+
+    func testChangingQueryDismissesActionsPalette() {
+        let model = makeModel()
+        model.query = "~/"
+        selectItem(titled: "Notes.txt", in: model)
+        model.toggleActions()
+
+        model.query = "launcher"
+
+        XCTAssertFalse(model.isActionsPresented)
+        XCTAssertNil(model.actionsTarget)
+    }
+
     // MARK: - Open With
 
     func testOpenWithPaletteFlow() {
@@ -302,11 +374,18 @@ final class LauncherModelFileBrowserTests: XCTestCase {
         let notesApp = URL(fileURLWithPath: "/System/Applications/Notes.app")
         var opened: (file: URL, application: URL)?
         var closed = false
+        var events: [String] = []
 
         let model = makeModel()
         model.applicationFinder = { _ in [textEdit, notesApp] }
-        model.applicationOpener = { opened = (file: $0, application: $1) }
-        model.onRequestClose = { closed = true }
+        model.applicationOpener = {
+            opened = (file: $0, application: $1)
+            events.append("open")
+        }
+        model.onRequestClose = {
+            closed = true
+            events.append("dismiss")
+        }
         model.query = "~/"
         selectItem(titled: "Notes.txt", in: model)
 
@@ -325,6 +404,7 @@ final class LauncherModelFileBrowserTests: XCTestCase {
         XCTAssertEqual(opened?.file.lastPathComponent, "Notes.txt")
         XCTAssertEqual(opened?.application, notesApp)
         XCTAssertTrue(closed)
+        XCTAssertEqual(events, ["dismiss", "open"])
     }
 
     func testEscapeDismissesOpenWithPaletteFirst() {

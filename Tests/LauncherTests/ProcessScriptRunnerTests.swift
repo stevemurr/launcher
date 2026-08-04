@@ -26,7 +26,7 @@ final class ProcessScriptRunnerTests: XCTestCase {
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
         }
         return ScriptCommand(
-            id: url.path, url: url, title: name, mode: .compact,
+            id: url.path, url: url, title: name, mode: .normal,
             packageName: nil, description: nil, needsConfirmation: false, arguments: []
         )
     }
@@ -200,7 +200,7 @@ final class ProcessScriptRunnerTests: XCTestCase {
     func testMissingInterpreterReportsFailedToStart() throws {
         let url = directory.appendingPathComponent("ghost.sh")
         let command = ScriptCommand(
-            id: url.path, url: url, title: "Ghost", mode: .compact,
+            id: url.path, url: url, title: "Ghost", mode: .normal,
             packageName: nil, description: nil, needsConfirmation: false, arguments: []
         )
         // File does not exist and is not executable -> bash fallback runs and

@@ -57,6 +57,34 @@ final class ApplicationCatalogTests: XCTestCase {
         )
     }
 
+    func testDefaultRootsIncludeCoreServicesUtilities() {
+        let home = URL(fileURLWithPath: "/Users/example", isDirectory: true)
+
+        XCTAssertTrue(
+            ApplicationCatalog.searchRoots(homeDirectory: home).contains {
+                $0.path == "/System/Library/CoreServices/Applications"
+            }
+        )
+    }
+
+    func testDiscoversExplicitCoreApplicationOutsideSearchRoots() throws {
+        let finder = temporaryDirectory.appendingPathComponent("CoreServices/Finder.app", isDirectory: true)
+        try createApplicationBundle(
+            at: finder,
+            name: "Finder",
+            bundleIdentifier: "com.apple.finder"
+        )
+
+        let records = ApplicationCatalog.discoverApplications(
+            in: [],
+            additionalApplications: [finder]
+        )
+
+        XCTAssertEqual(records.map(\.id), ["com.apple.finder"])
+        XCTAssertEqual(records.first?.name, "Finder")
+        XCTAssertEqual(records.first?.url, finder)
+    }
+
     private func createApplicationBundle(
         at url: URL,
         name: String,

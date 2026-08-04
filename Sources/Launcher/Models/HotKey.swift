@@ -56,6 +56,11 @@ struct HotKey: Codable, Equatable, Sendable {
         modifiers.carbonValue
     }
 
+    func matches(_ event: NSEvent) -> Bool {
+        UInt32(event.keyCode) == keyCode
+            && HotKeyModifiers(eventFlags: event.modifierFlags) == modifiers
+    }
+
     private static func keyName(for keyCode: UInt32) -> String {
         let names: [UInt32: String] = [
             UInt32(kVK_ANSI_A): "A", UInt32(kVK_ANSI_B): "B",

@@ -50,7 +50,7 @@ enum ScriptMetadataParser {
             id: url.path,
             url: url,
             title: title,
-            mode: values["mode"].flatMap(ScriptMode.init(rawValue:)) ?? .fullOutput,
+            mode: ScriptMode(metadataValue: values["mode"]),
             packageName: values["packagename"],
             description: values["description"],
             needsConfirmation: values["needsconfirmation"] == "true" || values["needsconfirmation"] == "1",

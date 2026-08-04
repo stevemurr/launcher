@@ -46,10 +46,8 @@ struct CreateScriptView: View {
 
                     formRow("Mode") {
                         Picker("", selection: $model.scriptDraft.mode) {
-                            Text("Full Output").tag(ScriptMode.fullOutput)
-                            Text("Compact").tag(ScriptMode.compact)
+                            Text("Normal").tag(ScriptMode.normal)
                             Text("Silent").tag(ScriptMode.silent)
-                            Text("Inline").tag(ScriptMode.inline)
                         }
                         .labelsHidden()
                         .accessibilityIdentifier("createScript.mode")

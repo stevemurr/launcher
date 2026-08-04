@@ -2,21 +2,54 @@ import Foundation
 
 enum ApplicationCatalog {
     static func discoverApplications(fileManager: FileManager = .default) -> [ApplicationRecord] {
-        let roots = [
+        discoverApplications(
+            in: searchRoots(homeDirectory: fileManager.homeDirectoryForCurrentUser),
+            additionalApplications: [
+                URL(fileURLWithPath: "/System/Library/CoreServices/Finder.app", isDirectory: true)
+            ],
+            fileManager: fileManager
+        )
+    }
+
+    static func searchRoots(homeDirectory: URL) -> [URL] {
+        [
             URL(fileURLWithPath: "/Applications", isDirectory: true),
             URL(fileURLWithPath: "/System/Applications", isDirectory: true),
-            fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Applications", isDirectory: true)
+            URL(fileURLWithPath: "/System/Library/CoreServices/Applications", isDirectory: true),
+            homeDirectory.appendingPathComponent("Applications", isDirectory: true)
         ]
-
-        return discoverApplications(in: roots, fileManager: fileManager)
     }
 
     static func discoverApplications(
         in roots: [URL],
+        additionalApplications: [URL] = [],
         fileManager: FileManager = .default
     ) -> [ApplicationRecord] {
         let resourceKeys: [URLResourceKey] = [.isHiddenKey]
         var recordsByID: [String: ApplicationRecord] = [:]
+
+        func addApplication(at url: URL) {
+            guard url.pathExtension.caseInsensitiveCompare("app") == .orderedSame else { return }
+            let bundle = Bundle(url: url)
+            let displayName = (bundle?.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String)
+                ?? (bundle?.object(forInfoDictionaryKey: "CFBundleName") as? String)
+                ?? url.deletingPathExtension().lastPathComponent
+            let bundleID = bundle?.bundleIdentifier
+            let id = bundleID ?? url.standardizedFileURL.path
+            let executable = bundle?.object(forInfoDictionaryKey: "CFBundleExecutable") as? String
+            let keywords = [bundleID, executable, url.lastPathComponent]
+                .compactMap { $0 }
+                .joined(separator: " ")
+            let record = ApplicationRecord(id: id, name: displayName, url: url, keywords: keywords)
+
+            if let existing = recordsByID[id] {
+                if url.path.count < existing.url.path.count {
+                    recordsByID[id] = record
+                }
+            } else {
+                recordsByID[id] = record
+            }
+        }
 
         for root in roots where fileManager.fileExists(atPath: root.path) {
             let standardizedRoot = root.standardizedFileURL
@@ -38,26 +71,12 @@ enum ApplicationCatalog {
 
                 guard isApplication else { continue }
                 enumerator.skipDescendants()
-
-                let bundle = Bundle(url: url)
-                let displayName = (bundle?.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String)
-                    ?? (bundle?.object(forInfoDictionaryKey: "CFBundleName") as? String)
-                    ?? url.deletingPathExtension().lastPathComponent
-                let bundleID = bundle?.bundleIdentifier
-                let id = bundleID ?? url.standardizedFileURL.path
-                let executable = bundle?.object(forInfoDictionaryKey: "CFBundleExecutable") as? String
-                let keywords = [bundleID, executable, url.lastPathComponent]
-                    .compactMap { $0 }
-                    .joined(separator: " ")
-
-                if let existing = recordsByID[id] {
-                    if url.path.count < existing.url.path.count {
-                        recordsByID[id] = ApplicationRecord(id: id, name: displayName, url: url, keywords: keywords)
-                    }
-                } else {
-                    recordsByID[id] = ApplicationRecord(id: id, name: displayName, url: url, keywords: keywords)
-                }
+                addApplication(at: url)
             }
+        }
+
+        for url in additionalApplications where fileManager.fileExists(atPath: url.path) {
+            addApplication(at: url)
         }
 
         return recordsByID.values.sorted {

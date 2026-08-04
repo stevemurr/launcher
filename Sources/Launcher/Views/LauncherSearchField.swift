@@ -11,7 +11,7 @@ enum LauncherKeyCommand {
     case focusNext
     case focusPrevious
     case toggleRunPalette
-    case toggleOutput
+    case toggleOutputPane
     case editScript
     case deleteScript
     case openWith
@@ -132,8 +132,8 @@ final class KeyHandlingTextField: NSTextField {
             onCommand?(.toggleRunPalette)
             return true
         }
-        if event.modifierFlags.contains(.command), characters == "o" {
-            onCommand?(.toggleOutput)
+        if event.modifierFlags.contains(.command), characters == "p" {
+            onCommand?(.toggleOutputPane)
             return true
         }
         if event.modifierFlags.contains(.command), characters == "e" {

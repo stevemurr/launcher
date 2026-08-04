@@ -54,7 +54,7 @@ private func argumentMetadataJSON(placeholder: String) -> String {
 
 struct ScriptDraft {
     var template: ScriptTemplate = .bash
-    var mode: ScriptMode = .compact
+    var mode: ScriptMode = .normal
     var title = ""
     var description = ""
     var packageName = ""
@@ -69,7 +69,7 @@ struct ScriptDraft {
             "\(comment) Required parameters:",
             "\(comment) @raycast.schemaVersion 1",
             "\(comment) @raycast.title \(title)",
-            "\(comment) @raycast.mode \(mode.rawValue)",
+            "\(comment) @raycast.mode \(mode.metadataValue)",
             "",
             "\(comment) Optional parameters:"
         ]
@@ -246,6 +246,13 @@ enum ScriptCommandCreator {
             // Removing the title would stop the file being a script command.
             return field.key == "title" ? original : nil
         }
+        // Legacy spellings (fullOutput/compact/inline) all mean .normal, so
+        // leave the author's wording alone when it already resolves to the
+        // drafted mode rather than rewriting their file for no reason.
+        if field.key == "mode",
+           ScriptMode(metadataValue: field.value) == ScriptMode(metadataValue: value) {
+            return original
+        }
         if value == field.value { return original }
         return "\(comment) @raycast.\(canonical) \(value)"
     }
@@ -261,7 +268,7 @@ enum ScriptCommandCreator {
         let description = draft.description.trimmingCharacters(in: .whitespaces)
         return [
             "title": title.isEmpty ? nil : title,
-            "mode": draft.mode.rawValue,
+            "mode": draft.mode.metadataValue,
             "packagename": packageName.isEmpty ? nil : packageName,
             "description": description.isEmpty ? nil : description,
             "needsconfirmation": draft.needsConfirmation ? "true" : nil

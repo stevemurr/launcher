@@ -97,28 +97,44 @@ final class LauncherModel: ObservableObject {
     @Published var query = "" {
         didSet {
             guard query != oldValue else { return }
-            refreshResults(resetSelection: true)
-            isOutputExpanded = false
-            if let run = scriptRun, run.phase != .running {
-                scriptRun = nil
-                isRunChipVisible = false
+            if isActionsPresented {
+                isActionsPresented = false
+                actionsTarget = nil
             }
+            if isOpenWithPresented {
+                isOpenWithPresented = false
+                openWithTarget = nil
+            }
+            refreshResults(resetSelection: true)
+            clearFinishedRun()
         }
     }
     @Published private(set) var results: [LauncherItem] = []
     @Published private(set) var calculation: Calculation?
     @Published var selectedIndex = 0
-    @Published var screen: LauncherScreen = .search
+    @Published var screen: LauncherScreen = .search {
+        didSet {
+            // Settings and Create Script render at full window width.
+            if screen != .search { dismissOutputPane() }
+        }
+    }
     @Published var isActionsPresented = false
     @Published var actionsSelectionIndex = 0
+    @Published private(set) var actionsTarget: LauncherItem?
     @Published var isLoading = false
     @Published var focusToken = 0
     @Published private(set) var launchAtLogin = false
     @Published var launchAtLoginError: String?
 
     @Published private(set) var scriptRun: ScriptRunState?
-    @Published private(set) var isRunChipVisible = false
-    @Published var isOutputExpanded = false
+    @Published private(set) var isOutputPanePresented = false {
+        didSet {
+            guard isOutputPanePresented != oldValue else { return }
+            // Must stay synchronous: showLauncher() relies on the panel having
+            // already shrunk before positionPanel() centers it.
+            onOutputPanePresentationChange?(isOutputPanePresented)
+        }
+    }
     @Published var isRunPalettePresented = false
     @Published private(set) var pendingRun: PendingScriptRun?
     @Published private(set) var focusTarget: LauncherFocusTarget = .search
@@ -137,10 +153,17 @@ final class LauncherModel: ObservableObject {
 
     let settings: LauncherSettings
     var onRequestClose: (() -> Void)?
+    var onOutputPanePresentationChange: ((Bool) -> Void)?
     var onHotKeyChange: ((HotKey) -> Bool)?
     var onQuickLook: ((URL) -> Void)?
     var applicationFinder: (URL) -> [URL] = { url in
         NSWorkspace.shared.urlsForApplications(toOpen: url)
+    }
+    var urlOpener: (URL) -> Void = { url in
+        _ = NSWorkspace.shared.open(url)
+    }
+    var fileRevealer: (URL) -> Void = { url in
+        NSWorkspace.shared.activateFileViewerSelecting([url])
     }
     var applicationOpener: (URL, URL) -> Void = { fileURL, applicationURL in
         NSWorkspace.shared.open(
@@ -159,6 +182,7 @@ final class LauncherModel: ObservableObject {
     private var scripts: [LauncherItem] = []
     private var runGeneration = 0
     private var browseGeneration = 0
+    private var scriptScanGeneration = 0
     private var lastSelectedScriptID: String?
     private let launcherSettingsItem = LauncherItem(
         id: "launcher.settings",
@@ -206,8 +230,9 @@ final class LauncherModel: ObservableObject {
     }
 
     var availableActions: [LauncherAction] {
-        guard let selectedItem else { return [] }
-        switch selectedItem.kind {
+        let item = isActionsPresented ? actionsTarget : selectedItem
+        guard let item else { return [] }
+        switch item.kind {
         case .application: return [.open, .showInFinder, .copyPath]
         case .scriptCommand: return [.open, .editScript, .showInFinder, .copyScriptContents, .deleteScript]
         case .file, .directory: return [.open, .openWith, .showInFinder, .quickLook, .copyPath]
@@ -227,9 +252,14 @@ final class LauncherModel: ObservableObject {
         scriptsDirectoryOverride ?? settings.scriptsDirectory
     }
 
-    var showMoreAvailable: Bool {
+    /// The chip lives exactly as long as the run it describes.
+    var isRunChipVisible: Bool { scriptRun != nil }
+
+    /// Whether there is output worth showing in the ⌘P pane. Silent scripts opt
+    /// out of output entirely, so the pane stays empty even while one runs.
+    var isOutputAvailable: Bool {
         guard let run = scriptRun else { return false }
-        return run.script.mode == .compact || run.script.mode == .fullOutput
+        return run.script.mode != .silent
     }
 
     func loadApplications() {
@@ -276,15 +306,20 @@ final class LauncherModel: ObservableObject {
         self.screen = screen
         isActionsPresented = false
         actionsSelectionIndex = 0
+        actionsTarget = nil
         isRunPalettePresented = false
         isOpenWithPresented = false
         pendingRun = nil
         pendingDeletion = nil
         editingScriptURL = nil
-        isOutputExpanded = false
+        dismissOutputPane()
         focusTarget = .search
         browseSession = nil
         rescanScripts()
+        // query.didSet is guarded against no-op assignments, so a launcher
+        // dismissed with an empty query would otherwise reopen still showing
+        // the last run's chip.
+        clearFinishedRun()
         if screen == .search {
             query = ""
             // query.didSet is guarded against no-op assignments, so refresh
@@ -343,7 +378,6 @@ final class LauncherModel: ObservableObject {
             }
             return
         }
-        if isOutputExpanded { return }
         activateSelected()
     }
 
@@ -352,8 +386,10 @@ final class LauncherModel: ObservableObject {
         case .launcherSettings:
             showSettings()
         case let .url(url):
-            NSWorkspace.shared.open(url)
+            // A cold launch can keep the workspace call busy long enough for
+            // the panel to linger, so dismiss before handing off the URL.
             onRequestClose?()
+            urlOpener(url)
         case let .copyText(text):
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)
@@ -374,11 +410,13 @@ final class LauncherModel: ObservableObject {
     func showSettings() {
         screen = .settings
         isActionsPresented = false
+        actionsTarget = nil
     }
 
     func showSearch() {
         screen = .search
         isActionsPresented = false
+        actionsTarget = nil
         editingScriptURL = nil
         focusToken += 1
     }
@@ -395,10 +433,11 @@ final class LauncherModel: ObservableObject {
             openWithTarget = nil
         } else if isActionsPresented {
             isActionsPresented = false
+            actionsTarget = nil
         } else if screen == .search, case .argument = focusTarget {
             focusSearch()
-        } else if isOutputExpanded {
-            isOutputExpanded = false
+        } else if isOutputPanePresented {
+            dismissOutputPane()
         } else if isFileBrowsing {
             ascendOrExitBrowse()
         } else if screen != .search {
@@ -409,38 +448,51 @@ final class LauncherModel: ObservableObject {
     }
 
     func toggleActions() {
+        if isActionsPresented {
+            isActionsPresented = false
+            actionsTarget = nil
+            return
+        }
         guard selectedItem != nil, pendingRun == nil, pendingDeletion == nil else { return }
-        if isOpenWithPresented { isOpenWithPresented = false }
-        if !isActionsPresented { actionsSelectionIndex = 0 }
-        isActionsPresented.toggle()
+        if isOpenWithPresented {
+            isOpenWithPresented = false
+            openWithTarget = nil
+        }
+        actionsSelectionIndex = 0
+        actionsTarget = selectedItem
+        isActionsPresented = true
     }
 
     func perform(_ action: LauncherAction) {
-        guard let selectedItem else { return }
+        let target = isActionsPresented ? actionsTarget : selectedItem
+        guard let target else { return }
         isActionsPresented = false
+        actionsTarget = nil
 
         switch action {
         case .open:
-            activate(selectedItem)
+            activate(target)
         case .openWith:
-            presentOpenWith()
+            presentOpenWith(for: target)
         case .quickLook:
-            guard let fileURL = selectedItem.fileURL else { return }
+            guard let fileURL = target.fileURL else { return }
             onQuickLook?(fileURL)
         case .editScript:
-            beginEditingSelectedScript()
+            guard case let .script(script) = target.destination else { return }
+            beginEditing(script)
         case .deleteScript:
-            requestDeletingSelectedScript()
+            guard case let .script(script) = target.destination else { return }
+            requestDeleting(script)
         case .showInFinder:
-            guard let fileURL = selectedItem.fileURL else { return }
-            NSWorkspace.shared.activateFileViewerSelecting([fileURL])
+            guard let fileURL = target.fileURL else { return }
             onRequestClose?()
+            fileRevealer(fileURL)
         case .copyPath:
-            guard let fileURL = selectedItem.fileURL else { return }
+            guard let fileURL = target.fileURL else { return }
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(fileURL.path, forType: .string)
         case .copyScriptContents:
-            guard let fileURL = selectedItem.fileURL,
+            guard let fileURL = target.fileURL,
                   let contents = try? String(contentsOf: fileURL, encoding: .utf8) else { return }
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(contents, forType: .string)
@@ -588,8 +640,14 @@ final class LauncherModel: ObservableObject {
     }
 
     func presentOpenWith() {
-        guard let fileURL = selectedItem?.fileURL else { return }
+        guard let selectedItem else { return }
+        presentOpenWith(for: selectedItem)
+    }
+
+    private func presentOpenWith(for item: LauncherItem) {
+        guard let fileURL = item.fileURL else { return }
         isActionsPresented = false
+        actionsTarget = nil
         openWithTarget = fileURL
         openWithApps = applicationFinder(fileURL).prefix(8).map { url in
             OpenWithCandidate(url: url, name: FileManager.default.displayName(atPath: url.path))
@@ -608,14 +666,17 @@ final class LauncherModel: ObservableObject {
         isOpenWithPresented = false
         guard openWithApps.indices.contains(openWithSelectionIndex),
               let fileURL = openWithTarget else { return }
-        applicationOpener(fileURL, openWithApps[openWithSelectionIndex].url)
+        let applicationURL = openWithApps[openWithSelectionIndex].url
         openWithTarget = nil
         onRequestClose?()
+        applicationOpener(fileURL, applicationURL)
     }
 
     // MARK: - Script commands
 
     func rescanScripts() {
+        scriptScanGeneration += 1
+        let generation = scriptScanGeneration
         let directory = effectiveScriptsDirectory
         if isUITesting {
             applyScripts(ScriptCommandCatalog.discoverScripts(in: directory))
@@ -623,7 +684,10 @@ final class LauncherModel: ObservableObject {
         }
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let discovered = ScriptCommandCatalog.discoverScripts(in: directory)
-            DispatchQueue.main.async { self?.applyScripts(discovered) }
+            DispatchQueue.main.async {
+                guard let self, self.scriptScanGeneration == generation else { return }
+                self.applyScripts(discovered)
+            }
         }
     }
 
@@ -674,6 +738,10 @@ final class LauncherModel: ObservableObject {
 
     func beginEditingSelectedScript() {
         guard let script = selectedScript else { return }
+        beginEditing(script)
+    }
+
+    private func beginEditing(_ script: ScriptCommand) {
         // Re-read the file so the form reflects edits made outside the app
         // since the last scan.
         let command: ScriptCommand
@@ -688,12 +756,18 @@ final class LauncherModel: ObservableObject {
         createScriptError = nil
         screen = .createScript
         isActionsPresented = false
+        actionsTarget = nil
     }
 
     func requestDeletingSelectedScript() {
         guard let script = selectedScript else { return }
+        requestDeleting(script)
+    }
+
+    private func requestDeleting(_ script: ScriptCommand) {
         pendingDeletion = script
         isActionsPresented = false
+        actionsTarget = nil
     }
 
     func confirmPendingDeletion() {
@@ -701,6 +775,7 @@ final class LauncherModel: ObservableObject {
         self.pendingDeletion = nil
         do {
             try FileManager.default.removeItem(at: pendingDeletion.url)
+            scriptScanGeneration += 1
             applyScripts(ScriptCommandCatalog.discoverScripts(in: effectiveScriptsDirectory))
         } catch {
             NSSound.beep()
@@ -720,9 +795,10 @@ final class LauncherModel: ObservableObject {
         runGeneration += 1
         let generation = runGeneration
         scriptRun = ScriptRunState(script: script, phase: .running, output: "")
-        isRunChipVisible = true
         isRunPalettePresented = false
-        isOutputExpanded = script.mode == .fullOutput
+        // Runs never open the pane on their own: the footer chip is the
+        // notification, ⌘P is the escalation. An already-open pane simply
+        // re-binds to the new run.
         focusSearch()
         if script.mode == .silent { onRequestClose?() }
         scriptRunner.run(
@@ -742,9 +818,33 @@ final class LauncherModel: ObservableObject {
         isRunPalettePresented.toggle()
     }
 
-    func toggleOutputExpanded() {
-        guard showMoreAvailable else { return }
-        isOutputExpanded.toggle()
+    func toggleOutputPane() {
+        // Never toggle out from under a modal confirmation.
+        guard isOutputPanePresented || (pendingRun == nil && pendingDeletion == nil) else { return }
+        if !isOutputPanePresented, isActionsPresented {
+            isActionsPresented = false
+            actionsTarget = nil
+        }
+        isOutputPanePresented.toggle()
+        // Deliberately no focusSearch() here, matching toggleActions() and
+        // toggleRunPalette(): focusSearch() re-selects the whole query, so the
+        // next keystroke would wipe what the user typed. Nothing in the pane is
+        // focusable, and key commands route through the responder chain, so
+        // opening it cannot strand focus.
+    }
+
+    func dismissOutputPane() {
+        isOutputPanePresented = false
+    }
+
+    /// Drops a run that has already completed, along with the pane showing it.
+    /// A *running* run is left alone: losing the chip would strand the process
+    /// with no ⌘T cancel affordance, and closing a live stream because the user
+    /// typed would be hostile.
+    private func clearFinishedRun() {
+        guard let run = scriptRun, run.phase != .running else { return }
+        scriptRun = nil
+        dismissOutputPane()
     }
 
     private static let outputCharacterCap = 100_000
@@ -767,10 +867,6 @@ final class LauncherModel: ObservableObject {
         run.phase = .finished(result)
         scriptRun = run
         isRunPalettePresented = false
-        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
-            guard let self, self.runGeneration == generation else { return }
-            self.isRunChipVisible = false
-        }
     }
 
     private func firstMissingRequiredArgumentIndex(for script: ScriptCommand) -> Int? {
@@ -840,10 +936,14 @@ final class LauncherModel: ObservableObject {
                 url = try ScriptCommandCreator.create(draft: scriptDraft, in: effectiveScriptsDirectory)
             }
             let title = scriptDraft.title
+            scriptScanGeneration += 1
             applyScripts(ScriptCommandCatalog.discoverScripts(in: effectiveScriptsDirectory))
             showSearch()
             query = title
-            if andOpen { NSWorkspace.shared.open(url) }
+            if andOpen {
+                onRequestClose?()
+                urlOpener(url)
+            }
         } catch {
             let verb = editingScriptURL == nil ? "create" : "save"
             createScriptError = "Could not \(verb) the script: \(error.localizedDescription)"
@@ -855,6 +955,9 @@ final class LauncherModel: ObservableObject {
             .appendingPathComponent("launcher-ui-fixtures-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
+        // The three legacy mode spellings below are deliberate: they give the
+        // UI tests end-to-end coverage that fullOutput/compact/inline all still
+        // parse as .normal. Do not "modernize" them.
         let fixtures: [(name: String, contents: String)] = [
             ("say-hello.sh", """
             #!/bin/sh
@@ -936,6 +1039,10 @@ final class LauncherModel: ObservableObject {
             applyBrowseResults(filter: trimmedQuery, resetSelection: resetSelection)
             return
         }
+        // Leaving path mode must also cancel any listing already running on
+        // the background queue; otherwise its late result can replace this
+        // newer application/settings search.
+        browseGeneration += 1
         fileListing = nil
 
         calculation = trimmedQuery.isEmpty ? nil : CalculatorEngine.evaluate(trimmedQuery)

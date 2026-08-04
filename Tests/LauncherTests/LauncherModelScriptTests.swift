@@ -116,7 +116,8 @@ final class LauncherModelScriptTests: XCTestCase {
         XCTAssertTrue(model.results.contains { $0.destination == .createScript })
     }
 
-    func testCompactRunLifecycle() throws {
+    // The legacy `compact` spelling is deliberate: it exercises the alias.
+    func testNormalRunLifecycle() throws {
         try writeScript("count.sh", header: "# @raycast.title Counter\n# @raycast.mode compact", body: "echo line1\necho line2")
         let model = makeModel()
         waitForScripts(in: model, query: "counter")
@@ -126,19 +127,20 @@ final class LauncherModelScriptTests: XCTestCase {
 
         XCTAssertEqual(model.scriptRun?.phase, .running)
         XCTAssertTrue(model.isRunChipVisible)
-        XCTAssertFalse(model.isOutputExpanded)
+        XCTAssertFalse(model.isOutputPanePresented)
 
         waitUntil { model.scriptRun?.phase == .finished(.success) }
         XCTAssertTrue(model.scriptRun?.output.contains("line1") == true)
         XCTAssertTrue(model.scriptRun?.output.contains("line2") == true)
-        XCTAssertTrue(model.showMoreAvailable)
+        XCTAssertTrue(model.isOutputAvailable)
 
         model.query = "something else"
         XCTAssertNil(model.scriptRun)
         XCTAssertFalse(model.isRunChipVisible)
     }
 
-    func testFullOutputModeExpandsImmediately() throws {
+    // The legacy `fullOutput` spelling used to auto-expand; now nothing does.
+    func testRunDoesNotOpenOutputPaneAutomatically() throws {
         try writeScript("full.sh", header: "# @raycast.title Full Runner\n# @raycast.mode fullOutput", body: "echo out")
         let model = makeModel()
         waitForScripts(in: model, query: "full runner")
@@ -146,11 +148,32 @@ final class LauncherModelScriptTests: XCTestCase {
 
         model.handleSubmit()
 
-        XCTAssertTrue(model.isOutputExpanded)
+        XCTAssertFalse(model.isOutputPanePresented)
+        XCTAssertTrue(model.isOutputAvailable)
         waitUntil { model.scriptRun?.phase == .finished(.success) }
     }
 
-    func testSilentModeRequestsClose() throws {
+    func testOutputPaneTogglesForNormalRun() throws {
+        try writeScript("inline.sh", header: "# @raycast.title Inline Runner\n# @raycast.mode inline", body: "echo out")
+        let runner = StubScriptRunner()
+        let model = makeModel(runner: runner)
+        waitForScripts(in: model, query: "inline runner")
+        model.select(index: model.results.firstIndex { $0.kind == .scriptCommand }!)
+
+        model.handleSubmit()
+        runner.emit("inline output")
+        runner.finish(.success)
+
+        XCTAssertTrue(model.isOutputAvailable)
+        XCTAssertFalse(model.isOutputPanePresented)
+        model.toggleOutputPane()
+        XCTAssertTrue(model.isOutputPanePresented)
+        XCTAssertEqual(model.scriptRun?.output, "inline output")
+        model.toggleOutputPane()
+        XCTAssertFalse(model.isOutputPanePresented)
+    }
+
+    func testSilentModeRequestsCloseAndNeverShowsOutput() throws {
         try writeScript("quiet.sh", header: "# @raycast.title Quiet One\n# @raycast.mode silent", body: "echo shh")
         let model = makeModel()
         var closed = false
@@ -161,7 +184,11 @@ final class LauncherModelScriptTests: XCTestCase {
         model.handleSubmit()
 
         XCTAssertTrue(closed)
-        XCTAssertFalse(model.showMoreAvailable)
+        XCTAssertFalse(model.isOutputAvailable)
+        // The pane still toggles, but a silent run has nothing to put in it.
+        model.toggleOutputPane()
+        XCTAssertTrue(model.isOutputPanePresented)
+        XCTAssertFalse(model.isOutputAvailable)
         waitUntil { model.scriptRun?.phase == .finished(.success) }
     }
 
@@ -307,7 +334,7 @@ final class LauncherModelScriptTests: XCTestCase {
         XCTAssertEqual(model.scriptRun?.output, "partial")
     }
 
-    func testEscapePrecedenceOutputPanelBeforeClose() throws {
+    func testEscapePrecedenceOutputPaneBeforeClose() throws {
         try writeScript("c.sh", header: "# @raycast.title Gamma Script\n# @raycast.mode fullOutput", body: "echo c")
         let model = makeModel(runner: StubScriptRunner())
         var closed = false
@@ -316,16 +343,18 @@ final class LauncherModelScriptTests: XCTestCase {
         model.select(index: model.results.firstIndex { $0.kind == .scriptCommand }!)
 
         model.handleSubmit()
-        XCTAssertTrue(model.isOutputExpanded)
+        // Runs no longer auto-open the pane, so open it explicitly.
+        model.toggleOutputPane()
+        XCTAssertTrue(model.isOutputPanePresented)
 
         model.toggleRunPalette()
         XCTAssertTrue(model.isRunPalettePresented)
         model.handleEscape()
         XCTAssertFalse(model.isRunPalettePresented)
-        XCTAssertTrue(model.isOutputExpanded)
+        XCTAssertTrue(model.isOutputPanePresented)
 
         model.handleEscape()
-        XCTAssertFalse(model.isOutputExpanded)
+        XCTAssertFalse(model.isOutputPanePresented)
         XCTAssertFalse(closed)
 
         model.handleEscape()
@@ -352,7 +381,7 @@ final class LauncherModelScriptTests: XCTestCase {
 
         XCTAssertEqual(model.scriptRun?.phase, .running)
         XCTAssertTrue(model.isRunChipVisible)
-        XCTAssertFalse(closed, "compact run must not close the launcher")
+        XCTAssertFalse(closed, "a normal run must not close the launcher")
 
         waitUntil(10) { model.scriptRun?.phase == .finished(.success) }
         XCTAssertTrue(model.scriptRun?.output.contains("line 3") == true)
@@ -361,7 +390,7 @@ final class LauncherModelScriptTests: XCTestCase {
     func testCreateScriptEndState() {
         let model = makeModel()
         model.scriptDraft.title = "Fresh Command"
-        model.scriptDraft.mode = .inline
+        model.scriptDraft.mode = .normal
 
         model.saveScriptDraft(andOpen: false)
 
@@ -371,6 +400,24 @@ final class LauncherModelScriptTests: XCTestCase {
         let created = directory.appendingPathComponent("fresh-command.sh")
         XCTAssertTrue(FileManager.default.isExecutableFile(atPath: created.path))
         XCTAssertTrue(model.results.contains { $0.title == "Fresh Command" && $0.kind == .scriptCommand })
+    }
+
+    func testCreateAndOpenDismissesBeforeOpeningScript() {
+        let model = makeModel()
+        model.scriptDraft.title = "Open Me"
+        var events: [String] = []
+        var openedURL: URL?
+        model.onRequestClose = { events.append("dismiss") }
+        model.urlOpener = { url in
+            openedURL = url
+            events.append("open")
+        }
+
+        model.saveScriptDraft(andOpen: true)
+
+        XCTAssertEqual(events, ["dismiss", "open"])
+        XCTAssertEqual(openedURL?.lastPathComponent, "open-me.sh")
+        XCTAssertTrue(openedURL.map { FileManager.default.fileExists(atPath: $0.path) } == true)
     }
 
     func testScriptActionsIncludeEditAndDelete() throws {
@@ -403,7 +450,7 @@ final class LauncherModelScriptTests: XCTestCase {
             directory.appendingPathComponent("edit-me.sh").resolvingSymlinksInPath()
         )
         XCTAssertEqual(model.scriptDraft.title, "Edit Me")
-        XCTAssertEqual(model.scriptDraft.mode, .inline)
+        XCTAssertEqual(model.scriptDraft.mode, .normal)
         XCTAssertEqual(model.scriptDraft.packageName, "Tools")
         XCTAssertEqual(model.scriptDraft.description, "Tweak things")
         XCTAssertEqual(model.scriptDraft.argumentPlaceholders, ["Target"])
@@ -433,6 +480,163 @@ final class LauncherModelScriptTests: XCTestCase {
         let parsed = ScriptMetadataParser.parse(contents: contents, url: url)
         XCTAssertEqual(parsed?.title, "New Name")
         XCTAssertEqual(parsed?.mode, .silent)
+    }
+
+    // MARK: - ⌘P output pane
+
+    func testOutputPaneTogglesWithoutARun() {
+        let model = makeModel()
+        var states: [Bool] = []
+        model.onOutputPanePresentationChange = { states.append($0) }
+
+        model.toggleOutputPane()
+        XCTAssertTrue(model.isOutputPanePresented)
+        XCTAssertFalse(model.isOutputAvailable, "nothing to show, but the pane still opens")
+
+        model.toggleOutputPane()
+        XCTAssertFalse(model.isOutputPanePresented)
+        XCTAssertEqual(states, [true, false])
+    }
+
+    func testOutputPanePresentationCallbackFiresOnlyOnChanges() {
+        let model = makeModel()
+        var states: [Bool] = []
+        model.onOutputPanePresentationChange = { states.append($0) }
+
+        model.toggleOutputPane()
+        model.dismissOutputPane()
+        model.dismissOutputPane() // already closed — must not fire again
+        model.toggleOutputPane()
+        model.prepareForPresentation()
+
+        XCTAssertEqual(states, [true, false, true, false])
+    }
+
+    /// The window must never be left expanded while a different screen — which
+    /// renders at full width and has no pane — is showing.
+    func testShowingAnotherScreenClosesOutputPane() {
+        let model = makeModel()
+        model.toggleOutputPane()
+        XCTAssertTrue(model.isOutputPanePresented)
+
+        model.showSettings()
+        XCTAssertFalse(model.isOutputPanePresented)
+    }
+
+    func testTypingClearsFinishedRunAndClosesPane() throws {
+        try writeScript("d.sh", header: "# @raycast.title Delta Script", body: "echo d")
+        let runner = StubScriptRunner()
+        let model = makeModel(runner: runner)
+        waitForScripts(in: model, query: "delta")
+        model.select(index: model.results.firstIndex { $0.kind == .scriptCommand }!)
+
+        model.handleSubmit()
+        runner.finish(.success)
+        model.toggleOutputPane()
+        XCTAssertTrue(model.isOutputPanePresented)
+
+        model.query = "unrelated"
+
+        XCTAssertNil(model.scriptRun)
+        XCTAssertFalse(model.isRunChipVisible)
+        XCTAssertFalse(model.isOutputPanePresented)
+    }
+
+    /// Clearing a live run would strand the process with no ⌘T cancel.
+    func testTypingDuringRunKeepsChipAndPane() throws {
+        try writeScript("e.sh", header: "# @raycast.title Epsilon Script", body: "echo e")
+        let runner = StubScriptRunner()
+        let model = makeModel(runner: runner)
+        waitForScripts(in: model, query: "epsilon")
+        model.select(index: model.results.firstIndex { $0.kind == .scriptCommand }!)
+
+        model.handleSubmit()
+        model.toggleOutputPane()
+        runner.emit("still going")
+
+        model.query = "unrelated"
+
+        XCTAssertEqual(model.scriptRun?.phase, .running)
+        XCTAssertTrue(model.isRunChipVisible)
+        XCTAssertTrue(model.isOutputPanePresented)
+        runner.finish(.cancelled)
+    }
+
+    /// The 4-second chip auto-hide is gone, and query.didSet is guarded against
+    /// no-op assignments — so an empty-query dismissal used to leave the next
+    /// presentation showing a stale "Completed" chip.
+    func testPrepareForPresentationClearsFinishedRunWithEmptyQuery() throws {
+        try writeScript("f.sh", header: "# @raycast.title Zeta Script", body: "echo f")
+        let runner = StubScriptRunner()
+        let model = makeModel(runner: runner)
+        waitForScripts(in: model, query: "zeta")
+        model.select(index: model.results.firstIndex { $0.kind == .scriptCommand }!)
+
+        model.handleSubmit()
+        runner.finish(.success)
+        model.toggleOutputPane()
+        model.query = ""
+        XCTAssertNil(model.scriptRun, "typing already cleared it")
+
+        // Run again and dismiss without touching the query at all.
+        model.query = "zeta"
+        model.select(index: model.results.firstIndex { $0.kind == .scriptCommand }!)
+        model.handleSubmit()
+        runner.finish(.success)
+        model.query = ""
+        model.handleSubmit()
+
+        model.prepareForPresentation()
+
+        XCTAssertNil(model.scriptRun)
+        XCTAssertFalse(model.isRunChipVisible)
+        XCTAssertFalse(model.isOutputPanePresented)
+    }
+
+    /// The results list stays visible beside the pane, so Return must keep
+    /// activating the selection instead of being swallowed.
+    func testSubmitActivatesSelectionWhileOutputPaneIsOpen() throws {
+        try writeScript("g.sh", header: "# @raycast.title Eta Script", body: "echo g")
+        let runner = StubScriptRunner()
+        let model = makeModel(runner: runner)
+        waitForScripts(in: model, query: "eta")
+        model.select(index: model.results.firstIndex { $0.kind == .scriptCommand }!)
+
+        model.handleSubmit()
+        runner.emit("first")
+        runner.finish(.success)
+        model.toggleOutputPane()
+        XCTAssertTrue(model.isOutputPanePresented)
+
+        model.handleSubmit()
+
+        XCTAssertEqual(model.scriptRun?.phase, .running, "Return must re-run the selection")
+        XCTAssertEqual(model.scriptRun?.output, "")
+        runner.finish(.success)
+    }
+
+    func testEscapeClosesOutputPaneBeforeFileBrowseAscend() {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("escape-browse-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let settings = LauncherSettings(defaults: defaults)
+        settings.save(scriptsDirectory: directory)
+        let model = LauncherModel(
+            settings: settings,
+            isUITesting: false,
+            loginItems: QuietLoginItemService(),
+            browseHome: home
+        )
+        model.query = "~/"
+        XCTAssertTrue(model.isFileBrowsing)
+
+        model.toggleOutputPane()
+        model.handleEscape()
+
+        XCTAssertFalse(model.isOutputPanePresented)
+        XCTAssertTrue(model.isFileBrowsing, "the first Escape must only close the pane")
     }
 
     func testDeleteScriptRequiresConfirmationAndRemovesFile() throws {

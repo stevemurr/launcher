@@ -85,7 +85,7 @@ final class LauncherUITests: XCTestCase {
         // either live state here; the strict "Completed" wait comes below.
         XCTAssertTrue(chip.label.contains("Running") || chip.label.contains("Completed"))
 
-        search.typeKey("o", modifierFlags: [.command])
+        search.typeKey("p", modifierFlags: [.command])
         let output = app.descendants(matching: .any)["script.output"].firstMatch
         XCTAssertTrue(output.waitForExistence(timeout: 3))
 
@@ -95,8 +95,6 @@ final class LauncherUITests: XCTestCase {
         )
         XCTAssertEqual(XCTWaiter.wait(for: [streamed], timeout: 6), .completed)
 
-        // The chip's "Completed" state lasts only 4 s; the output panel's
-        // "Exit 0" status persists, so it is the reliable completion signal.
         let status = app.descendants(matching: .any)["script.output.status"].firstMatch
         let completed = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", "Exit 0", "Exit 0"),
@@ -104,10 +102,153 @@ final class LauncherUITests: XCTestCase {
         )
         XCTAssertEqual(XCTWaiter.wait(for: [completed], timeout: 8), .completed)
 
+        // The chip no longer auto-hides: it keeps reporting the exit status for
+        // as long as the run is on screen.
+        Thread.sleep(forTimeInterval: 5)
+        XCTAssertTrue(chip.exists)
+        XCTAssertTrue(chip.label.contains("Completed"), "got \(chip.label)")
+
         let attachment = XCTAttachment(screenshot: app.screenshot())
         attachment.name = "Script command streamed output"
         attachment.lifetime = .keepAlways
         add(attachment)
+    }
+
+    func testScriptOutputPaneOpensWithCommandP() {
+        let search = app.textFields["launcher.search"]
+        search.click()
+        search.typeText("say hello")
+
+        XCTAssertTrue(app.buttons["result.Say Hello"].waitForExistence(timeout: 3))
+        search.typeKey(.return, modifierFlags: [])
+        XCTAssertTrue(app.buttons["footer.output"].waitForExistence(timeout: 3))
+
+        search.typeKey("p", modifierFlags: [.command])
+        let output = app.descendants(matching: .any)["script.output"].firstMatch
+        XCTAssertTrue(output.waitForExistence(timeout: 3))
+        let contents = XCTNSPredicateExpectation(
+            predicate: NSPredicate(
+                format: "label CONTAINS %@ OR value CONTAINS %@",
+                "Hello from fixture",
+                "Hello from fixture"
+            ),
+            object: output
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [contents], timeout: 5), .completed)
+    }
+
+    func testCommandPTogglesOutputPaneAndWindowWidth() {
+        let search = app.textFields["launcher.search"]
+        search.click()
+        search.typeText("say hello")
+
+        XCTAssertTrue(app.buttons["result.Say Hello"].waitForExistence(timeout: 3))
+        search.typeKey(.return, modifierFlags: [])
+        XCTAssertTrue(app.buttons["footer.runChip"].waitForExistence(timeout: 3))
+        XCTAssertTrue(waitForPanelWidth(774), "launcher did not start at the compact width")
+
+        search.typeKey("p", modifierFlags: [.command])
+        let pane = app.descendants(matching: .any)["script.outputPane"].firstMatch
+        XCTAssertTrue(pane.waitForExistence(timeout: 3), "⌘P did not open the output pane")
+        XCTAssertTrue(waitForPanelWidth(990), "the window did not widen for the pane")
+        XCTAssertTrue(search.exists, "the search field must survive the drawer opening")
+
+        search.typeKey("p", modifierFlags: [.command])
+        XCTAssertTrue(waitForPanelWidth(774), "the window did not collapse back")
+        XCTAssertTrue(search.exists)
+
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = "Output pane collapsed"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    func testEscapeClosesOutputPaneBeforeHidingLauncher() {
+        let search = app.textFields["launcher.search"]
+        search.click()
+        search.typeText("say hello")
+
+        XCTAssertTrue(app.buttons["result.Say Hello"].waitForExistence(timeout: 3))
+        search.typeKey(.return, modifierFlags: [])
+        search.typeKey("p", modifierFlags: [.command])
+        XCTAssertTrue(waitForPanelWidth(990))
+
+        search.typeKey(.escape, modifierFlags: [])
+
+        XCTAssertTrue(waitForPanelWidth(774), "the first Escape should only close the pane")
+        XCTAssertTrue(search.exists, "the first Escape must not hide the launcher")
+    }
+
+    /// Typing closes the pane from inside controlTextDidChange, which resizes
+    /// the NSPanel while the field editor is live. The keystroke must land and
+    /// the window must collapse.
+    func testTypingWithOutputPaneOpenCollapsesWindow() {
+        let search = app.textFields["launcher.search"]
+        search.click()
+        search.typeText("say hello")
+
+        XCTAssertTrue(app.buttons["result.Say Hello"].waitForExistence(timeout: 3))
+        search.typeKey(.return, modifierFlags: [])
+
+        let status = app.descendants(matching: .any)["script.output.status"].firstMatch
+        search.typeKey("p", modifierFlags: [.command])
+        let finished = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", "Exit 0", "Exit 0"),
+            object: status
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [finished], timeout: 8), .completed)
+        XCTAssertTrue(waitForPanelWidth(990))
+
+        // A completed run leaves the query selected (startRun refocuses search),
+        // so this starts a fresh search rather than appending.
+        app.typeText("activity")
+
+        XCTAssertTrue(waitForPanelWidth(774), "typing should collapse the pane with the finished run")
+        XCTAssertTrue(
+            app.buttons["result.Activity Monitor"].waitForExistence(timeout: 3),
+            "the keystrokes must survive the resize; query is \(String(describing: search.value))"
+        )
+        XCTAssertFalse(app.buttons["footer.runChip"].exists, "the finished run should be cleared")
+    }
+
+    /// ⌘P must not re-select the search field's contents — doing so would make
+    /// the next keystroke replace the query instead of extending it.
+    func testCommandPDoesNotDisturbTheQuery() {
+        let search = app.textFields["launcher.search"]
+        search.click()
+        search.typeText("activ")
+
+        search.typeKey("p", modifierFlags: [.command])
+        XCTAssertTrue(
+            app.descendants(matching: .any)["script.outputPane"].firstMatch.waitForExistence(timeout: 3)
+        )
+        XCTAssertTrue(waitForPanelWidth(990))
+
+        app.typeText("ity")
+
+        XCTAssertTrue(
+            app.buttons["result.Activity Monitor"].waitForExistence(timeout: 3),
+            "⌘P clobbered the query; got \(String(describing: search.value))"
+        )
+    }
+
+    /// A borderless NSPanel surfaces as a dialog to XCUITest on some builds and
+    /// as a window on others, so check both.
+    private func waitForPanelWidth(
+        _ expectedWidth: CGFloat,
+        accuracy: CGFloat = 3,
+        timeout: TimeInterval = 5
+    ) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let dialog = app.dialogs.firstMatch
+            let panel = dialog.exists ? dialog : app.windows.firstMatch
+            if panel.exists, abs(panel.frame.width - expectedWidth) <= accuracy {
+                return true
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        return false
     }
 
     func testScriptArgumentFilledViaTab() {
@@ -125,7 +266,8 @@ final class LauncherUITests: XCTestCase {
         app.typeText("world")
         app.typeKey(.return, modifierFlags: [])
 
-        // fullOutput mode opens the output panel automatically.
+        // No mode auto-opens the pane any more.
+        app.typeKey("p", modifierFlags: [.command])
         let output = app.descendants(matching: .any)["script.output"].firstMatch
         XCTAssertTrue(output.waitForExistence(timeout: 3))
         let streamed = XCTNSPredicateExpectation(

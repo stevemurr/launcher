@@ -16,7 +16,7 @@ final class ScriptTemplateTests: XCTestCase {
     func testBashContentsParseBackIntoEquivalentCommand() {
         var draft = ScriptDraft()
         draft.title = "Deploy Site"
-        draft.mode = .inline
+        draft.mode = .normal
         draft.description = "Ship it"
         draft.packageName = "Ops"
         draft.needsConfirmation = true
@@ -27,11 +27,25 @@ final class ScriptTemplateTests: XCTestCase {
 
         let parsed = ScriptMetadataParser.parse(contents: contents, url: URL(fileURLWithPath: "/tmp/x.sh"))
         XCTAssertEqual(parsed?.title, "Deploy Site")
-        XCTAssertEqual(parsed?.mode, .inline)
+        XCTAssertEqual(parsed?.mode, .normal)
         XCTAssertEqual(parsed?.description, "Ship it")
         XCTAssertEqual(parsed?.packageName, "Ops")
         XCTAssertEqual(parsed?.needsConfirmation, true)
         XCTAssertEqual(parsed?.arguments.map(\.placeholder), ["Branch", "Argument 2"])
+    }
+
+    /// Scripts the launcher generates must stay valid Raycast script commands,
+    /// so `.normal` serializes as the legacy `compact` rather than "normal".
+    func testGeneratedModeLineStaysRaycastCompatible() {
+        var draft = ScriptDraft()
+        draft.title = "Compat"
+
+        draft.mode = .normal
+        XCTAssertTrue(draft.fileContents().contains("# @raycast.mode compact"))
+        XCTAssertFalse(draft.fileContents().contains("normal"))
+
+        draft.mode = .silent
+        XCTAssertTrue(draft.fileContents().contains("# @raycast.mode silent"))
     }
 
     func testArgumentPlaceholderWithQuotesAndBackslashesRoundTrips() {

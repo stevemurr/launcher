@@ -43,7 +43,7 @@ final class ScriptCommandEditTests: XCTestCase {
 
         XCTAssertEqual(draft.template, .python)
         XCTAssertEqual(draft.title, "Prefilled")
-        XCTAssertEqual(draft.mode, .inline)
+        XCTAssertEqual(draft.mode, .normal)
         XCTAssertEqual(draft.packageName, "Utils")
         XCTAssertEqual(draft.description, "Does things")
         XCTAssertTrue(draft.needsConfirmation)
@@ -89,6 +89,48 @@ final class ScriptCommandEditTests: XCTestCase {
         try ScriptCommandCreator.update(draft: loadDraft(from: url), at: url)
 
         XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), original)
+    }
+
+    /// fullOutput/compact/inline all mean `.normal`, so editing an unrelated
+    /// field must not rewrite the author's chosen spelling.
+    func testUpdateKeepsLegacyModeSpelling() throws {
+        for legacy in ["fullOutput", "compact", "inline"] {
+            let url = try write("legacy-\(legacy).sh", """
+            #!/bin/bash
+            # @raycast.title Legacy
+            # @raycast.mode \(legacy)
+            echo hi
+            """)
+
+            var draft = try loadDraft(from: url)
+            XCTAssertEqual(draft.mode, .normal)
+            draft.title = "Legacy Renamed"
+            try ScriptCommandCreator.update(draft: draft, at: url)
+
+            let contents = try String(contentsOf: url, encoding: .utf8)
+            XCTAssertTrue(
+                contents.contains("# @raycast.mode \(legacy)"),
+                "\(legacy) should survive an unrelated edit untouched"
+            )
+            XCTAssertTrue(contents.contains("# @raycast.title Legacy Renamed"))
+        }
+    }
+
+    func testUpdateStillRewritesModeWhenItActuallyChanges() throws {
+        let url = try write("switch.sh", """
+        #!/bin/bash
+        # @raycast.title Switcher
+        # @raycast.mode inline
+        echo hi
+        """)
+
+        var draft = try loadDraft(from: url)
+        draft.mode = .silent
+        try ScriptCommandCreator.update(draft: draft, at: url)
+
+        let contents = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(contents.contains("# @raycast.mode silent"))
+        XCTAssertFalse(contents.contains("inline"))
     }
 
     func testUpdateRemovesClearedOptionalFields() throws {

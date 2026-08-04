@@ -366,64 +366,81 @@ private extension View {
     }
 }
 
-/// Terminal-style streamed output, shown in place of the results list.
-struct ScriptOutputPanel: View {
+/// The ⌘P drawer: terminal-style streamed output beside the results list.
+struct ScriptOutputPane: View {
     @ObservedObject var model: LauncherModel
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Image(systemName: "apple.terminal")
-                    .font(.system(size: 12, weight: .semibold))
-                Text(model.scriptRun?.script.title ?? "Script Output")
-                    .font(.system(size: 12, weight: .semibold))
-                    .lineLimit(1)
-                Spacer()
-                Text(statusText)
-                    .font(.system(size: 11, weight: .medium))
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 2)
-                    .background(Color.white.opacity(0.12), in: Capsule())
-                    .accessibilityIdentifier("script.output.status")
-            }
-            .foregroundStyle(Color.white.opacity(0.8))
-            .padding(.horizontal, 12)
-            .frame(height: 32)
+        if model.isOutputAvailable, let run = model.scriptRun {
+            VStack(spacing: 0) {
+                header(for: run)
+                    .frame(height: LauncherStyle.paneHeaderHeight)
 
-            Divider().overlay(Color.white.opacity(0.15))
+                Divider().opacity(0.65)
 
-            ScrollViewReader { proxy in
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text(model.scriptRun?.output.isEmpty == false ? model.scriptRun!.output : "Waiting for output…")
-                            .font(.system(size: 12, design: .monospaced))
-                            .foregroundStyle(
-                                model.scriptRun?.output.isEmpty == false
-                                    ? Color.white.opacity(0.92)
-                                    : Color.white.opacity(0.45)
-                            )
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .accessibilityIdentifier("script.output")
-                        Color.clear
-                            .frame(height: 1)
-                            .id("bottom")
-                    }
-                    .padding(10)
-                }
-                .onChange(of: model.scriptRun?.output) { _ in
-                    proxy.scrollTo("bottom", anchor: .bottom)
-                }
-                .onAppear {
-                    proxy.scrollTo("bottom", anchor: .bottom)
-                }
+                outputScroll(for: run)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    // The terminal identity lives where the monospace text is;
+                    // the drawer itself keeps normal launcher chrome.
+                    .background(Color.black.opacity(0.92))
             }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("script.outputPane")
+        } else {
+            Text("No Output")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.tertiary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .accessibilityIdentifier("script.outputPane")
         }
-        .background(Color.black.opacity(0.92))
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(Color.launcherSeparator.opacity(0.8), lineWidth: 1)
+    }
+
+    private func header(for run: ScriptRunState) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "apple.terminal")
+                .font(.system(size: 12, weight: .semibold))
+            Text(run.script.title)
+                .font(.system(size: 13, weight: .semibold))
+                .lineLimit(1)
+            Spacer(minLength: 6)
+            Text(statusText)
+                .font(.system(size: 11, weight: .semibold))
+                .padding(.horizontal, 7)
+                .padding(.vertical, 2)
+                .background(Color.primary.opacity(0.065), in: Capsule())
+                .accessibilityIdentifier("script.output.status")
+        }
+        .foregroundStyle(Color.secondary)
+        .padding(.horizontal, 14)
+    }
+
+    private func outputScroll(for run: ScriptRunState) -> some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(run.output.isEmpty ? "Waiting for output…" : run.output)
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(
+                            run.output.isEmpty
+                                ? Color.white.opacity(0.45)
+                                : Color.white.opacity(0.92)
+                        )
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityIdentifier("script.output")
+                    Color.clear
+                        .frame(height: 1)
+                        .id("bottom")
+                }
+                .padding(12)
+            }
+            .onChange(of: model.scriptRun?.output) { _ in
+                proxy.scrollTo("bottom", anchor: .bottom)
+            }
+            // Also fires when the drawer opens mid-run, landing at the tail.
+            .onAppear {
+                proxy.scrollTo("bottom", anchor: .bottom)
+            }
         }
     }
 
