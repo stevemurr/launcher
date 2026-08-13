@@ -69,6 +69,11 @@ final class HotKeyRecorderButton: NSButton {
         }
 
         let newHotKey = HotKey(keyCode: UInt32(event.keyCode), modifiers: modifiers)
+        guard newHotKey.isSafeGlobalShortcut else {
+            NSSound.beep()
+            onChange?(newHotKey)
+            return
+        }
         hotKey = newHotKey
         isRecording = false
         updateTitle()

@@ -63,6 +63,12 @@ struct ArgumentTokenField: NSViewRepresentable {
             guard let field = notification.object as? NSTextField else { return }
             parent.text = field.stringValue
         }
+
+        func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            guard let command = LauncherKeyCommand(textCommandSelector: commandSelector) else { return false }
+            parent.onCommand(command)
+            return true
+        }
     }
 }
 
@@ -434,7 +440,7 @@ struct ScriptOutputPane: View {
                 }
                 .padding(12)
             }
-            .onChange(of: model.scriptRun?.output) { _ in
+            .onChange(of: model.scriptRun?.output) { _, _ in
                 proxy.scrollTo("bottom", anchor: .bottom)
             }
             // Also fires when the drawer opens mid-run, landing at the tail.

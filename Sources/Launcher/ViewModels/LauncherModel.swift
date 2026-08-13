@@ -93,6 +93,142 @@ struct OpenWithCandidate: Equatable, Identifiable {
     var id: String { url.path }
 }
 
+private struct SelectedScriptArgumentState: Equatable {
+    let scriptID: String
+    let schema: [ScriptArgument]
+}
+
+/// Synchronous filesystem work cannot always be interrupted once the kernel or
+/// a remote filesystem has started it. This token still suppresses work that
+/// has not begun and delivery from work that is already in flight.
+private final class LatestPendingExecutionRequest: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        lock.unlock()
+    }
+
+    var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+}
+
+/// Runs at most `maximumConcurrent` synchronous operations and retains only one
+/// not-yet-started operation: the latest submission. The serial state queue and
+/// its single reschedulable timer never wait for a worker slot, so hung workers
+/// cannot create a growing collection of libdispatch closures blocked on a
+/// semaphore.
+private final class LatestPendingExecutor<Output>: @unchecked Sendable {
+    private struct Job {
+        let request: LatestPendingExecutionRequest
+        let operation: () -> Output
+        let completion: (LatestPendingExecutionRequest, Output) -> Void
+    }
+
+    private let stateQueue: DispatchQueue
+    private let workerQueue: DispatchQueue
+    private let completionQueue: DispatchQueue
+    private let maximumConcurrent: Int
+    private let debounce: DispatchTimeInterval
+    private let timer: DispatchSourceTimer
+    private var activeCount = 0
+    private var pendingJob: Job?
+    private var pendingIsReady = false
+
+    init(
+        label: String,
+        maximumConcurrent: Int = 2,
+        debounce: DispatchTimeInterval = .milliseconds(75),
+        completionQueue: DispatchQueue = .main
+    ) {
+        precondition(maximumConcurrent > 0)
+        self.maximumConcurrent = maximumConcurrent
+        self.debounce = debounce
+        self.completionQueue = completionQueue
+        stateQueue = DispatchQueue(label: "\(label).scheduler", qos: .userInitiated)
+        workerQueue = DispatchQueue(label: "\(label).workers", qos: .userInitiated, attributes: .concurrent)
+        timer = DispatchSource.makeTimerSource(queue: stateQueue)
+        timer.schedule(deadline: .distantFuture)
+        timer.setEventHandler { [weak self] in
+            guard let self, self.pendingJob != nil else { return }
+            self.pendingIsReady = true
+            self.startReadyJobIfPossible()
+        }
+        timer.resume()
+    }
+
+    @discardableResult
+    func submit(
+        operation: @escaping () -> Output,
+        completion: @escaping (LatestPendingExecutionRequest, Output) -> Void
+    ) -> LatestPendingExecutionRequest {
+        let request = LatestPendingExecutionRequest()
+        let job = Job(request: request, operation: operation, completion: completion)
+        // Install synchronously so bursts cannot themselves form a backlog of
+        // state-update closures behind two hung workers. This queue never runs
+        // resolver work, so the critical section stays constant-time.
+        stateQueue.sync { [self] in
+            pendingJob?.request.cancel()
+            pendingJob = job
+            pendingIsReady = false
+            timer.schedule(deadline: .now() + debounce, leeway: .milliseconds(5))
+        }
+        return request
+    }
+
+    func cancel(_ request: LatestPendingExecutionRequest) {
+        request.cancel()
+        stateQueue.sync { [self] in
+            guard pendingJob?.request === request else { return }
+            pendingJob = nil
+            pendingIsReady = false
+            timer.schedule(deadline: .distantFuture)
+        }
+    }
+
+    private func startReadyJobIfPossible() {
+        dispatchPrecondition(condition: .onQueue(stateQueue))
+        guard activeCount < maximumConcurrent,
+              pendingIsReady,
+              let job = pendingJob else { return }
+
+        pendingJob = nil
+        pendingIsReady = false
+        guard !job.request.isCancelled else { return }
+
+        activeCount += 1
+        workerQueue.async { [self] in
+            guard !job.request.isCancelled else {
+                stateQueue.async { [self] in finishJob() }
+                return
+            }
+
+            let output = job.operation()
+            stateQueue.async { [self] in
+                activeCount -= 1
+                if !job.request.isCancelled {
+                    completionQueue.async {
+                        guard !job.request.isCancelled else { return }
+                        job.completion(job.request, output)
+                    }
+                }
+                startReadyJobIfPossible()
+            }
+        }
+    }
+
+    private func finishJob() {
+        dispatchPrecondition(condition: .onQueue(stateQueue))
+        activeCount -= 1
+        startReadyJobIfPossible()
+    }
+}
+
 final class LauncherModel: ObservableObject {
     @Published var query = "" {
         didSet {
@@ -146,6 +282,7 @@ final class LauncherModel: ObservableObject {
 
     @Published private(set) var browseSession: FileBrowserSession?
     @Published private(set) var fileListing: FileListing?
+    @Published private(set) var isFileListingLoading = false
     @Published var isOpenWithPresented = false
     @Published private(set) var openWithApps: [OpenWithCandidate] = []
     @Published var openWithSelectionIndex = 0
@@ -178,12 +315,19 @@ final class LauncherModel: ObservableObject {
     private let scriptRunner: ScriptRunning
     private let scriptsDirectoryOverride: URL?
     private let browseHomeOverride: URL?
+    private let fileListingResolver: (FileBrowserSession?, String, URL) -> FileListing?
+    private let resolvesFileListingsSynchronously: Bool
+    private let scriptDiscoverer: (URL) -> [ScriptCommand]
+    private let fileListingExecutor = LatestPendingExecutor<FileListing?>(label: "Launcher.file-listing")
+    private let scriptScanExecutor = LatestPendingExecutor<[ScriptCommand]>(label: "Launcher.script-scan")
     private var applications: [LauncherItem] = []
     private var scripts: [LauncherItem] = []
     private var runGeneration = 0
     private var browseGeneration = 0
     private var scriptScanGeneration = 0
-    private var lastSelectedScriptID: String?
+    private var fileListingRequest: LatestPendingExecutionRequest?
+    private var scriptScanRequest: LatestPendingExecutionRequest?
+    private var selectedScriptArgumentState: SelectedScriptArgumentState?
     private let launcherSettingsItem = LauncherItem(
         id: "launcher.settings",
         title: "Launcher Settings",
@@ -206,7 +350,10 @@ final class LauncherModel: ObservableObject {
         isUITesting: Bool = false,
         loginItems: LoginItemService? = nil,
         scriptRunner: ScriptRunning? = nil,
-        browseHome: URL? = nil
+        browseHome: URL? = nil,
+        resolvesFileListingsSynchronously: Bool? = nil,
+        fileListingResolver: ((FileBrowserSession?, String, URL) -> FileListing?)? = nil,
+        scriptDiscoverer: ((URL) -> [ScriptCommand])? = nil
     ) {
         self.settings = settings
         self.isUITesting = isUITesting
@@ -214,8 +361,12 @@ final class LauncherModel: ObservableObject {
         self.scriptRunner = scriptRunner ?? ProcessScriptRunner()
         self.scriptsDirectoryOverride = isUITesting ? Self.writeUITestFixtureScripts() : nil
         self.browseHomeOverride = browseHome ?? (isUITesting ? Self.writeUITestFixtureFiles() : nil)
+        self.resolvesFileListingsSynchronously = resolvesFileListingsSynchronously
+            ?? (isUITesting || browseHome != nil)
+        self.fileListingResolver = fileListingResolver ?? Self.resolveListing
+        self.scriptDiscoverer = scriptDiscoverer ?? { ScriptCommandCatalog.discoverScripts(in: $0) }
         launchAtLogin = self.loginItems.isEnabled
-        if isUITesting { applyScripts(ScriptCommandCatalog.discoverScripts(in: effectiveScriptsDirectory)) }
+        if isUITesting { applyScripts(self.scriptDiscoverer(effectiveScriptsDirectory)) }
         refreshResults(resetSelection: true)
     }
 
@@ -240,7 +391,18 @@ final class LauncherModel: ObservableObject {
         }
     }
 
-    var isFileBrowsing: Bool { fileListing != nil }
+    var isFileBrowsing: Bool { isFileListingLoading || fileListing != nil }
+
+    /// The directory represented by the file-browser UI, including the brief
+    /// interval after a derived path query starts but before its async listing
+    /// arrives. Keeping this available lets VoiceOver describe the pending file
+    /// search instead of falling back to applications and settings.
+    var browseDirectoryForAccessibility: URL? {
+        if let browseSession { return browseSession.current }
+        if let fileListing { return fileListing.directory }
+        guard isFileListingLoading else { return nil }
+        return FileBrowserEngine.parse(query, home: browseHome)?.directory
+    }
 
     var searchFieldPlaceholder: String {
         guard let session = browseSession else { return "Search applications and settings" }
@@ -264,7 +426,6 @@ final class LauncherModel: ObservableObject {
 
     func loadApplications() {
         isLoading = true
-        rescanScripts()
 
         if isUITesting {
             let fixtures = [
@@ -299,6 +460,7 @@ final class LauncherModel: ObservableObject {
 
     func reindex() {
         guard !isLoading else { return }
+        rescanScripts()
         loadApplications()
     }
 
@@ -320,12 +482,17 @@ final class LauncherModel: ObservableObject {
         // dismissed with an empty query would otherwise reopen still showing
         // the last run's chip.
         clearFinishedRun()
-        if screen == .search {
-            query = ""
-            // query.didSet is guarded against no-op assignments, so refresh
-            // explicitly to drop any stale file listing.
+        if query.isEmpty {
+            // query.didSet is guarded against no-op assignments. Refreshing
+            // here is essential when Launcher was hidden from sticky browse
+            // mode with an already-empty query; otherwise Settings can reopen
+            // over a stale listing whose navigation session was discarded.
             refreshResults(resetSelection: true)
-            selectedIndex = 0
+        } else {
+            query = ""
+        }
+        selectedIndex = 0
+        if screen == .search {
             focusToken += 1
         }
     }
@@ -378,6 +545,10 @@ final class LauncherModel: ObservableObject {
             }
             return
         }
+        // Never execute an item from the previous search while a path listing
+        // is replacing it. The visible results are cleared immediately too,
+        // but this guard is a second line of defense for programmatic callers.
+        guard !isFileListingLoading else { return }
         activateSelected()
     }
 
@@ -511,6 +682,10 @@ final class LauncherModel: ObservableObject {
     }
 
     func updateHotKey(_ hotKey: HotKey) {
+        guard hotKey.isSafeGlobalShortcut else {
+            settings.hotKeyError = "Use Control, Option, or Command in the shortcut."
+            return
+        }
         if onHotKeyChange?(hotKey) ?? true {
             settings.save(hotKey: hotKey)
             settings.hotKeyError = nil
@@ -548,7 +723,7 @@ final class LauncherModel: ObservableObject {
                 query = ""
             }
             focusSearch()
-        } else if fileListing != nil {
+        } else if isFileListingLoading || fileListing != nil {
             // Derived mode always has a non-empty path-like query; clearing it
             // exits the browser via query.didSet.
             query = ""
@@ -563,25 +738,46 @@ final class LauncherModel: ObservableObject {
         let session = browseSession
         let home = browseHome
 
+        cancelFileListingRequest()
+        fileListing = nil
+        results = []
+        selectedIndex = 0
+        isFileListingLoading = true
+        syncArgumentState()
+
         // Tests drive `query`/`browseSession` and assert on `results`/`fileListing`
         // synchronously, so keep the UI-testing and fixed-home (unit test) paths
         // inline. Real usage (no override) offloads the directory listing since
         // it enumerates and locale-sorts the whole directory on every keystroke.
-        if isUITesting || browseHomeOverride != nil {
-            let listing = Self.resolveListing(session: session, filter: trimmedQuery, home: home)
+        if resolvesFileListingsSynchronously {
+            let listing = fileListingResolver(session, trimmedQuery, home)
+            isFileListingLoading = false
             applyListing(listing, resetSelection: resetSelection)
             return
         }
 
-        browseGeneration += 1
         let generation = browseGeneration
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let listing = Self.resolveListing(session: session, filter: trimmedQuery, home: home)
-            DispatchQueue.main.async {
-                guard let self, self.browseGeneration == generation else { return }
+        let resolver = fileListingResolver
+        fileListingRequest = fileListingExecutor.submit(
+            operation: { resolver(session, trimmedQuery, home) },
+            completion: { [weak self] request, listing in
+                guard let self,
+                      self.browseGeneration == generation,
+                      self.fileListingRequest === request else { return }
+                self.fileListingRequest = nil
+                self.isFileListingLoading = false
                 self.applyListing(listing, resetSelection: resetSelection)
             }
+        )
+    }
+
+    private func cancelFileListingRequest() {
+        browseGeneration += 1
+        if let fileListingRequest {
+            fileListingExecutor.cancel(fileListingRequest)
         }
+        fileListingRequest = nil
+        isFileListingLoading = false
     }
 
     private static func resolveListing(
@@ -678,25 +874,37 @@ final class LauncherModel: ObservableObject {
         scriptScanGeneration += 1
         let generation = scriptScanGeneration
         let directory = effectiveScriptsDirectory
+        if let scriptScanRequest {
+            scriptScanExecutor.cancel(scriptScanRequest)
+        }
+        scriptScanRequest = nil
         if isUITesting {
-            applyScripts(ScriptCommandCatalog.discoverScripts(in: directory))
+            applyScripts(scriptDiscoverer(directory))
             return
         }
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let discovered = ScriptCommandCatalog.discoverScripts(in: directory)
-            DispatchQueue.main.async {
-                guard let self, self.scriptScanGeneration == generation else { return }
+        let discoverer = scriptDiscoverer
+        scriptScanRequest = scriptScanExecutor.submit(
+            operation: { discoverer(directory) },
+            completion: { [weak self] request, discovered in
+                guard let self,
+                      self.scriptScanGeneration == generation,
+                      self.scriptScanRequest === request else { return }
+                self.scriptScanRequest = nil
                 self.applyScripts(discovered)
             }
-        }
+        )
     }
 
     func updateScriptsDirectory(_ url: URL) {
         settings.save(scriptsDirectory: url)
+        // Commands from the previous directory must stop being actionable
+        // before the asynchronous scan of the new directory begins.
+        applyScripts([])
         rescanScripts()
     }
 
     private func applyScripts(_ commands: [ScriptCommand]) {
+        let selectedID = selectedItem?.id
         scripts = commands.map { command in
             LauncherItem(
                 id: "script.\(command.id)",
@@ -709,7 +917,31 @@ final class LauncherModel: ObservableObject {
                     .joined(separator: " ")
             )
         }
-        refreshResults(resetSelection: false)
+        // Application/script catalog updates are unrelated to the file rows
+        // already on screen. Refreshing while browsing would cancel and repeat
+        // a potentially slow network-directory enumeration.
+        guard browseSession == nil,
+              !FileBrowserEngine.isPathLike(query.trimmingCharacters(in: .whitespacesAndNewlines))
+        else { return }
+        refreshResults(resetSelection: false, preserving: selectedID)
+    }
+
+    private var knownScriptCommands: [ScriptCommand] {
+        scripts.compactMap { item in
+            guard case let .script(command) = item.destination else { return nil }
+            return command
+        }
+    }
+
+    private func upsertScript(_ command: ScriptCommand) {
+        var commands = knownScriptCommands.filter { $0.id != command.id }
+        commands.append(command)
+        commands.sort { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+        applyScripts(commands)
+    }
+
+    private func removeScript(withID id: String) {
+        applyScripts(knownScriptCommands.filter { $0.id != id })
     }
 
     private func requestRun(_ script: ScriptCommand) {
@@ -776,7 +1008,14 @@ final class LauncherModel: ObservableObject {
         do {
             try FileManager.default.removeItem(at: pendingDeletion.url)
             scriptScanGeneration += 1
-            applyScripts(ScriptCommandCatalog.discoverScripts(in: effectiveScriptsDirectory))
+            if let scriptScanRequest {
+                scriptScanExecutor.cancel(scriptScanRequest)
+            }
+            scriptScanRequest = nil
+            removeScript(withID: pendingDeletion.id)
+            // Reconcile against disk because the incremental view may have been
+            // based on a still-in-flight cold scan.
+            rescanScripts()
         } catch {
             NSSound.beep()
         }
@@ -804,7 +1043,10 @@ final class LauncherModel: ObservableObject {
         scriptRunner.run(
             script,
             arguments: arguments,
-            onOutput: { [weak self] chunk in self?.appendOutput(chunk, generation: generation) },
+            onOutput: { [weak self] chunk in
+                guard script.mode != .silent else { return }
+                self?.appendOutput(chunk, generation: generation)
+            },
             onCompletion: { [weak self] result in self?.finishRun(result, generation: generation) }
         )
     }
@@ -917,10 +1159,32 @@ final class LauncherModel: ObservableObject {
     }
 
     private func syncArgumentState() {
-        let scriptID = selectedScript?.id
-        guard scriptID != lastSelectedScriptID else { return }
-        lastSelectedScriptID = scriptID
-        argumentValues = Array(repeating: "", count: selectedScript?.arguments.count ?? 0)
+        let nextState = selectedScript.map {
+            SelectedScriptArgumentState(scriptID: $0.id, schema: $0.arguments)
+        }
+        guard nextState != selectedScriptArgumentState else { return }
+
+        let previousState = selectedScriptArgumentState
+        let previousValues = argumentValues
+        selectedScriptArgumentState = nextState
+
+        guard let nextState else {
+            argumentValues = []
+            if focusTarget != .search { focusSearch() }
+            return
+        }
+
+        argumentValues = nextState.schema.enumerated().map { index, argument in
+            // A rescan can replace a command at the same URL with a new argument
+            // schema. Preserve only values whose positional argument is unchanged;
+            // new or edited arguments must start empty so stale input cannot be
+            // passed under different semantics.
+            guard previousState?.scriptID == nextState.scriptID,
+                  previousState?.schema.indices.contains(index) == true,
+                  previousState?.schema[index] == argument,
+                  previousValues.indices.contains(index) else { return "" }
+            return previousValues[index]
+        }
         if focusTarget != .search { focusSearch() }
     }
 
@@ -937,7 +1201,20 @@ final class LauncherModel: ObservableObject {
             }
             let title = scriptDraft.title
             scriptScanGeneration += 1
-            applyScripts(ScriptCommandCatalog.discoverScripts(in: effectiveScriptsDirectory))
+            if let scriptScanRequest {
+                scriptScanExecutor.cancel(scriptScanRequest)
+            }
+            scriptScanRequest = nil
+            // Parse the file that was actually written. Edits deliberately
+            // preserve unmanaged metadata and argument JSON fields (including
+            // `optional`), which `ScriptDraft.fileContents()` cannot represent.
+            if let contents = try? String(contentsOf: url, encoding: .utf8),
+               let command = ScriptMetadataParser.parse(contents: contents, url: url) {
+                upsertScript(command)
+            }
+            // Reconcile against disk because the incremental view may have been
+            // based on a still-in-flight cold scan.
+            rescanScripts()
             showSearch()
             query = title
             if andOpen {
@@ -1015,6 +1292,7 @@ final class LauncherModel: ObservableObject {
     }
 
     private func apply(records: [ApplicationRecord]) {
+        let selectedID = selectedItem?.id
         applications = records.map { record in
             LauncherItem(
                 id: "application.\(record.id)",
@@ -1026,10 +1304,13 @@ final class LauncherModel: ObservableObject {
             )
         }
         isLoading = false
-        refreshResults(resetSelection: true)
+        guard browseSession == nil,
+              !FileBrowserEngine.isPathLike(query.trimmingCharacters(in: .whitespacesAndNewlines))
+        else { return }
+        refreshResults(resetSelection: true, preserving: selectedID)
     }
 
-    private func refreshResults(resetSelection: Bool) {
+    private func refreshResults(resetSelection: Bool, preserving selectedID: String? = nil) {
         let allItems = [launcherSettingsItem, createScriptItem]
             + applications + scripts + ApplicationCatalog.systemSettings
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1042,7 +1323,7 @@ final class LauncherModel: ObservableObject {
         // Leaving path mode must also cancel any listing already running on
         // the background queue; otherwise its late result can replace this
         // newer application/settings search.
-        browseGeneration += 1
+        cancelFileListingRequest()
         fileListing = nil
 
         calculation = trimmedQuery.isEmpty ? nil : CalculatorEngine.evaluate(trimmedQuery)
@@ -1051,10 +1332,11 @@ final class LauncherModel: ObservableObject {
             let suggestedApplications = applications.prefix(5)
             results = [launcherSettingsItem] + suggestedApplications
         } else {
+            let preparedQuery = SearchMatcher.prepare(trimmedQuery)
             let matches = allItems
                 .compactMap { item -> (LauncherItem, Int)? in
                     guard let score = SearchMatcher.score(
-                        query: trimmedQuery,
+                        query: preparedQuery,
                         title: item.title,
                         keywords: [item.subtitle, item.keywords].compactMap { $0 }.joined(separator: " ")
                     ) else { return nil }
@@ -1085,7 +1367,9 @@ final class LauncherModel: ObservableObject {
             }
         }
 
-        if resetSelection || !results.indices.contains(selectedIndex) {
+        if let selectedID, let index = results.firstIndex(where: { $0.id == selectedID }) {
+            selectedIndex = index
+        } else if resetSelection || !results.indices.contains(selectedIndex) {
             selectedIndex = 0
         }
         syncArgumentState()

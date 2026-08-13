@@ -18,7 +18,18 @@ final class LauncherSettings: ObservableObject {
         self.defaults = defaults
         if let data = defaults.data(forKey: Self.hotKeyKey),
            let stored = try? JSONDecoder().decode(HotKey.self, from: data) {
-            hotKey = stored
+            if stored.isSafeGlobalShortcut {
+                hotKey = stored
+            } else {
+                // Older builds allowed Shift-only global shortcuts, which
+                // intercept normal uppercase typing system-wide. Migrate them
+                // at the persistence boundary so every registration path is safe.
+                hotKey = .default
+                hotKeyError = "Shift-only shortcuts were reset to Option-Space."
+                if let replacement = try? JSONEncoder().encode(HotKey.default) {
+                    defaults.set(replacement, forKey: Self.hotKeyKey)
+                }
+            }
         } else {
             hotKey = .default
         }

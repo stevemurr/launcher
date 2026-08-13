@@ -126,6 +126,337 @@ final class LauncherModelFileBrowserTests: XCTestCase {
         wait(for: [settled], timeout: 2)
     }
 
+    func testPendingPathListingImmediatelyInvalidatesPreviousAction() {
+        let started = expectation(description: "listing started")
+        let gate = DispatchSemaphore(value: 0)
+        let settings = LauncherSettings(defaults: defaults)
+        settings.save(scriptsDirectory: scriptsDirectory)
+        let model = LauncherModel(
+            settings: settings,
+            isUITesting: false,
+            loginItems: QuietLoginItems(),
+            browseHome: home,
+            resolvesFileListingsSynchronously: false,
+            fileListingResolver: { _, _, home in
+                started.fulfill()
+                gate.wait()
+                return FileListing(
+                    directory: home,
+                    iCloudEntry: nil,
+                    directories: [],
+                    files: [],
+                    error: nil,
+                    isTruncated: false
+                )
+            }
+        )
+
+        model.query = "5+5"
+        XCTAssertEqual(model.selectedItem?.kind, .calculator)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString("unchanged", forType: .string)
+
+        model.query = "~/"
+
+        XCTAssertTrue(model.isFileListingLoading)
+        XCTAssertTrue(model.results.isEmpty)
+        XCTAssertNil(model.selectedItem)
+        model.handleSubmit()
+        XCTAssertEqual(NSPasteboard.general.string(forType: .string), "unchanged")
+
+        wait(for: [started], timeout: 2)
+        gate.signal()
+        let deadline = Date().addingTimeInterval(2)
+        while model.isFileListingLoading, Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+        XCTAssertFalse(model.isFileListingLoading)
+    }
+
+    func testPendingDerivedListingKeepsFileDirectoryInAccessibilityLabel() {
+        let started = expectation(description: "listing started")
+        let gate = DispatchSemaphore(value: 0)
+        let settings = LauncherSettings(defaults: defaults)
+        settings.save(scriptsDirectory: scriptsDirectory)
+        let model = LauncherModel(
+            settings: settings,
+            isUITesting: false,
+            loginItems: QuietLoginItems(),
+            browseHome: home,
+            resolvesFileListingsSynchronously: false,
+            fileListingResolver: { _, _, home in
+                started.fulfill()
+                gate.wait()
+                return FileListing(
+                    directory: home.appendingPathComponent("Alpha", isDirectory: true),
+                    iCloudEntry: nil,
+                    directories: [],
+                    files: [],
+                    error: nil,
+                    isTruncated: false
+                )
+            }
+        )
+
+        model.query = "~/Alpha/"
+
+        let pendingDirectory = home.appendingPathComponent("Alpha", isDirectory: true).standardizedFileURL
+        XCTAssertTrue(model.isFileListingLoading)
+        XCTAssertNil(model.fileListing)
+        XCTAssertEqual(
+            model.browseDirectoryForAccessibility?.standardizedFileURL.path,
+            pendingDirectory.path
+        )
+        XCTAssertEqual(
+            LauncherSearchField.contextualAccessibilityLabel(
+                for: model.browseDirectoryForAccessibility
+            ),
+            "Search files in \(pendingDirectory.path)/"
+        )
+
+        wait(for: [started], timeout: 2)
+        gate.signal()
+        let deadline = Date().addingTimeInterval(2)
+        while model.isFileListingLoading, Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+        XCTAssertFalse(model.isFileListingLoading)
+    }
+
+    func testRapidPathChangesAreCoalescedAndStayBounded() {
+        let firstStarted = expectation(description: "first listing started")
+        let latestStarted = expectation(description: "latest listing started")
+        let firstGate = DispatchSemaphore(value: 0)
+        defer { firstGate.signal() }
+        let lock = NSLock()
+        var calls = 0
+        var active = 0
+        var maximumActive = 0
+        let settings = LauncherSettings(defaults: defaults)
+        settings.save(scriptsDirectory: scriptsDirectory)
+        let model = LauncherModel(
+            settings: settings,
+            isUITesting: false,
+            loginItems: QuietLoginItems(),
+            browseHome: home,
+            resolvesFileListingsSynchronously: false,
+            fileListingResolver: { _, _, home in
+                lock.lock()
+                calls += 1
+                let call = calls
+                active += 1
+                maximumActive = max(maximumActive, active)
+                lock.unlock()
+
+                if call == 1 {
+                    firstStarted.fulfill()
+                    firstGate.wait()
+                } else if call == 2 {
+                    latestStarted.fulfill()
+                }
+
+                lock.lock()
+                active -= 1
+                lock.unlock()
+                return FileListing(
+                    directory: home,
+                    iCloudEntry: nil,
+                    directories: [],
+                    files: [],
+                    error: nil,
+                    isTruncated: false
+                )
+            }
+        )
+
+        model.query = "~/first"
+        wait(for: [firstStarted], timeout: 2)
+
+        for index in 0..<100 {
+            model.query = "~/latest-\(index)"
+        }
+        XCTAssertTrue(model.results.isEmpty)
+        XCTAssertTrue(model.isFileListingLoading)
+
+        wait(for: [latestStarted], timeout: 3)
+        let latestDeadline = Date().addingTimeInterval(2)
+        while model.isFileListingLoading, Date() < latestDeadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+        XCTAssertFalse(
+            model.isFileListingLoading,
+            "the latest local request must finish without waiting for an obsolete blocked read"
+        )
+        firstGate.signal()
+        let deadline = Date().addingTimeInterval(2)
+        while model.isFileListingLoading, Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+
+        lock.lock()
+        let finalCalls = calls
+        let finalMaximumActive = maximumActive
+        lock.unlock()
+        XCTAssertEqual(finalCalls, 2, "one active and only the latest pending request should run")
+        XCTAssertEqual(finalMaximumActive, 2, "one newest request may overtake one obsolete blocked read")
+        XCTAssertFalse(model.isFileListingLoading)
+    }
+
+    func testTwoHungListingsKeepOnlyNewestPendingRequest() {
+        let firstStarted = expectation(description: "first listing started")
+        let secondStarted = expectation(description: "second listing started")
+        let newestStarted = expectation(description: "newest pending listing started")
+        let firstGate = DispatchSemaphore(value: 0)
+        let secondGate = DispatchSemaphore(value: 0)
+        defer {
+            firstGate.signal()
+            secondGate.signal()
+        }
+
+        let lock = NSLock()
+        var requestedQueries: [String] = []
+        var active = 0
+        var maximumActive = 0
+        let settings = LauncherSettings(defaults: defaults)
+        settings.save(scriptsDirectory: scriptsDirectory)
+        let model = LauncherModel(
+            settings: settings,
+            isUITesting: false,
+            loginItems: QuietLoginItems(),
+            browseHome: home,
+            resolvesFileListingsSynchronously: false,
+            fileListingResolver: { _, query, home in
+                lock.lock()
+                requestedQueries.append(query)
+                let call = requestedQueries.count
+                active += 1
+                maximumActive = max(maximumActive, active)
+                lock.unlock()
+
+                switch call {
+                case 1:
+                    firstStarted.fulfill()
+                    firstGate.wait()
+                case 2:
+                    secondStarted.fulfill()
+                    secondGate.wait()
+                case 3:
+                    newestStarted.fulfill()
+                default:
+                    break
+                }
+
+                let name = String(query.dropFirst(2))
+                lock.lock()
+                active -= 1
+                lock.unlock()
+                return FileListing(
+                    directory: home,
+                    iCloudEntry: nil,
+                    directories: [],
+                    files: [
+                        FileEntry(
+                            url: home.appendingPathComponent(name),
+                            name: name,
+                            isDirectory: false,
+                            permissions: "644"
+                        )
+                    ],
+                    error: nil,
+                    isTruncated: false
+                )
+            }
+        )
+
+        model.query = "~/hung-first"
+        wait(for: [firstStarted], timeout: 2)
+        model.query = "~/hung-second"
+        wait(for: [secondStarted], timeout: 2)
+
+        for index in 0..<100 {
+            model.query = "~/pending-\(index)"
+        }
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+
+        lock.lock()
+        let callsWhileHung = requestedQueries.count
+        let maximumWhileHung = maximumActive
+        lock.unlock()
+        XCTAssertEqual(callsWhileHung, 2, "two occupied lanes must retain newer input without starting it")
+        XCTAssertEqual(maximumWhileHung, 2)
+
+        firstGate.signal()
+        wait(for: [newestStarted], timeout: 2)
+        let completionDeadline = Date().addingTimeInterval(2)
+        while model.isFileListingLoading, Date() < completionDeadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+
+        lock.lock()
+        let queriesAfterNewest = requestedQueries
+        let finalMaximumActive = maximumActive
+        lock.unlock()
+        XCTAssertEqual(queriesAfterNewest, ["~/hung-first", "~/hung-second", "~/pending-99"])
+        XCTAssertEqual(finalMaximumActive, 2)
+        XCTAssertEqual(model.results.map(\.title), ["pending-99"])
+        XCTAssertFalse(model.isFileListingLoading)
+
+        secondGate.signal()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        lock.lock()
+        let finalCallCount = requestedQueries.count
+        lock.unlock()
+        XCTAssertEqual(finalCallCount, 3, "releasing both lanes must not reveal a backlog of superseded work")
+    }
+
+    func testCatalogUpdateDoesNotRestartInFlightFileListing() {
+        let listingStarted = expectation(description: "listing started")
+        let releaseListing = DispatchSemaphore(value: 0)
+        let lock = NSLock()
+        var listingCalls = 0
+        let settings = LauncherSettings(defaults: defaults)
+        settings.save(scriptsDirectory: scriptsDirectory)
+        let model = LauncherModel(
+            settings: settings,
+            isUITesting: false,
+            loginItems: QuietLoginItems(),
+            browseHome: home,
+            resolvesFileListingsSynchronously: false,
+            fileListingResolver: { _, _, home in
+                lock.lock()
+                listingCalls += 1
+                lock.unlock()
+                listingStarted.fulfill()
+                releaseListing.wait()
+                return FileListing(
+                    directory: home,
+                    iCloudEntry: nil,
+                    directories: [],
+                    files: [],
+                    error: nil,
+                    isTruncated: false
+                )
+            },
+            scriptDiscoverer: { _ in [] }
+        )
+
+        model.query = "~/"
+        wait(for: [listingStarted], timeout: 2)
+        model.rescanScripts()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        releaseListing.signal()
+
+        let deadline = Date().addingTimeInterval(2)
+        while model.isFileListingLoading, Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+        lock.lock()
+        let finalCalls = listingCalls
+        lock.unlock()
+        XCTAssertEqual(finalCalls, 1)
+        XCTAssertFalse(model.isFileListingLoading)
+    }
+
     func testEscapeInDerivedModeClearsQueryWithoutClosing() {
         var closed = false
         let model = makeModel()
@@ -208,6 +539,42 @@ final class LauncherModelFileBrowserTests: XCTestCase {
         XCTAssertNil(model.browseSession)
         XCTAssertFalse(model.isFileBrowsing)
         XCTAssertEqual(model.query, "")
+    }
+
+    func testOpeningSettingsAfterStickyBrowseCannotLeaveOrphanedListing() {
+        var closed = false
+        let model = makeModel()
+        model.onRequestClose = { closed = true }
+        model.query = "~/"
+        selectItem(titled: "Alpha", in: model)
+        model.handleSubmit()
+        XCTAssertNotNil(model.browseSession)
+        XCTAssertEqual(model.query, "")
+
+        model.prepareForPresentation(screen: .settings)
+        model.showSearch()
+
+        XCTAssertNil(model.browseSession)
+        XCTAssertNil(model.fileListing)
+        XCTAssertFalse(model.isFileBrowsing)
+        XCTAssertFalse(model.results.contains { $0.kind == .file || $0.kind == .directory })
+        model.handleEscape()
+        XCTAssertTrue(closed, "Escape must still make progress after returning from Settings")
+    }
+
+    func testApplicationRefreshPreservesSelectedItemIdentity() {
+        let model = LauncherModel(
+            settings: LauncherSettings(defaults: defaults),
+            isUITesting: true,
+            loginItems: QuietLoginItems()
+        )
+        model.loadApplications()
+        let calculatorIndex = model.results.firstIndex { $0.id == "application.com.apple.calculator" }!
+        model.select(index: calculatorIndex)
+
+        model.loadApplications()
+
+        XCTAssertEqual(model.selectedItem?.id, "application.com.apple.calculator")
     }
 
     func testUnreadableDirectoryProducesErrorListing() throws {

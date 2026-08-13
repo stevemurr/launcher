@@ -1,3 +1,4 @@
+import Darwin
 import XCTest
 @testable import Launcher
 
@@ -93,11 +94,33 @@ final class ShellEnvironmentTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(startedAt), 5, "the timeout must bound the wait")
     }
 
+    func testCaptureRejectsUnboundedStartupNoisePromptly() throws {
+        let shell = try writeFakeShell("noisy-forever.sh", body: "yes startup-noise")
+
+        let startedAt = Date()
+        let captured = ShellEnvironment.capture(
+            shell: shell,
+            arguments: ["-ilc", "ignored"],
+            timeout: 5
+        )
+
+        XCTAssertNil(captured)
+        XCTAssertLessThan(
+            Date().timeIntervalSince(startedAt),
+            2,
+            "the byte cap must abort before the wall-clock timeout"
+        )
+    }
+
     func testCaptureFinishesWhileDescendantHoldsThePipe() throws {
         // A backgrounded descendant inherits the write end, so EOF never
-        // arrives; the end marker has to be what ends the read.
+        // arrives; the end marker has to be what ends the read. Capture owns
+        // its temporary process group, so the descendant must also be gone
+        // before capture returns.
+        let pidFile = directory.appendingPathComponent("lingering-child.pid")
         let shell = try writeFakeShell("lingering.sh", body: """
         sleep 20 &
+        echo $! > '\(pidFile.path)'
         \(dump(["PATH=/usr/local/bin"]))
         """)
 
@@ -106,6 +129,15 @@ final class ShellEnvironmentTests: XCTestCase {
 
         XCTAssertEqual(captured?["PATH"], "/usr/local/bin")
         XCTAssertLessThan(Date().timeIntervalSince(startedAt), 5)
+        let childPID = try XCTUnwrap(
+            pid_t(String(contentsOf: pidFile, encoding: .utf8)
+                .trimmingCharacters(in: .whitespacesAndNewlines))
+        )
+        defer { _ = kill(childPID, SIGKILL) }
+        XCTAssertTrue(
+            kill(childPID, 0) == -1 && errno == ESRCH,
+            "login-shell capture must not leak rc-file descendants"
+        )
     }
 
     func testCaptureReturnsNilForMissingShell() {
@@ -169,6 +201,52 @@ final class ShellEnvironmentTests: XCTestCase {
         XCTAssertEqual(environment.resolved()["MARKER"], "1")
         XCTAssertEqual(environment.resolved()["MARKER"], "1")
         XCTAssertEqual(captures, 1)
+    }
+
+    func testAsyncResolutionReturnsBeforeBlockedCaptureAndCoalescesCallers() {
+        let captureStarted = expectation(description: "capture started")
+        let resolutionsFinished = expectation(description: "resolutions finished")
+        resolutionsFinished.expectedFulfillmentCount = 2
+        let releaseCapture = DispatchSemaphore(value: 0)
+        let counterLock = NSLock()
+        var captures = 0
+        var resolvedMarkers: [String] = []
+
+        let environment = ShellEnvironment(capture: {
+            counterLock.lock()
+            captures += 1
+            counterLock.unlock()
+            captureStarted.fulfill()
+            releaseCapture.wait()
+            return ["MARKER": "ready"]
+        })
+
+        let startedAt = Date()
+        for _ in 0..<2 {
+            environment.resolve { result in
+                counterLock.lock()
+                resolvedMarkers.append(result["MARKER"] ?? "")
+                counterLock.unlock()
+                resolutionsFinished.fulfill()
+            }
+        }
+
+        XCTAssertLessThan(
+            Date().timeIntervalSince(startedAt),
+            0.5,
+            "starting an environment resolution must not wait for shell startup"
+        )
+        wait(for: [captureStarted], timeout: 2)
+        releaseCapture.signal()
+        wait(for: [resolutionsFinished], timeout: 2)
+
+        counterLock.lock()
+        let captureCount = captures
+        let markers = resolvedMarkers
+        counterLock.unlock()
+        XCTAssertEqual(captureCount, 1)
+        XCTAssertEqual(markers, ["ready", "ready"])
+        XCTAssertEqual(environment.resolved()["MARKER"], "ready")
     }
 
     func testPrewarmResolvesOffTheCallingThread() {

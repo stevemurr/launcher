@@ -4,6 +4,7 @@ import SwiftUI
 struct ListSectionHeader: View {
     let title: String
     var showsProgress = false
+    var progressAccessibilityLabel = "Indexing applications"
 
     var body: some View {
         HStack {
@@ -14,7 +15,7 @@ struct ListSectionHeader: View {
             if showsProgress {
                 ProgressView()
                     .controlSize(.small)
-                    .accessibilityLabel("Indexing applications")
+                    .accessibilityLabel(progressAccessibilityLabel)
             }
         }
         .padding(.horizontal, 16)
@@ -31,11 +32,17 @@ struct FileBrowserList: View {
                 LazyVStack(spacing: 0) {
                     if let listing = model.fileListing {
                         content(for: listing)
+                    } else if model.isFileListingLoading {
+                        ListSectionHeader(
+                            title: "Loading folder…",
+                            showsProgress: true,
+                            progressAccessibilityLabel: "Loading folder"
+                        )
                     }
                 }
                 .padding(.bottom, 8)
             }
-            .onChange(of: model.selectedIndex) { newIndex in
+            .onChange(of: model.selectedIndex) { _, newIndex in
                 guard model.isFileBrowsing, model.results.indices.contains(newIndex) else { return }
                 proxy.scrollTo(model.results[newIndex].id)
             }

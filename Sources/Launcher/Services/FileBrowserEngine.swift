@@ -109,10 +109,11 @@ enum FileBrowserEngine {
 
         // Score names before touching the filesystem again so large directories
         // only pay the per-entry stat for entries that survive the filter.
+        let preparedFilter = SearchMatcher.prepare(filter)
         let matched: [(url: URL, name: String, score: Int)] = contents.compactMap { url in
             let name = url.lastPathComponent
             guard !filter.isEmpty else { return (url, name, 0) }
-            guard let score = SearchMatcher.score(query: filter, title: name) else { return nil }
+            guard let score = SearchMatcher.score(query: preparedFilter, title: name) else { return nil }
             return (url, name, score)
         }
         .sorted { lhs, rhs in
@@ -120,23 +121,60 @@ enum FileBrowserEngine {
             return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
         }
 
-        let isTruncated = matched.count > maxEntries
-        let entries = matched.prefix(maxEntries).map { makeEntry(url: $0.url, name: $0.name, fileManager: fileManager) }
+        // The UI presents directories before files, so reserve the capped result
+        // set for directories first as well. Prefixing the globally name-sorted
+        // URLs before classifying them let a large run of early-sorting files hide
+        // every later directory, making those folders impossible to navigate to
+        // without first knowing their names and filtering for them.
+        let classified = matched.map { match in
+            (
+                url: match.url,
+                name: match.name,
+                isDirectory: isBrowsableDirectory(match.url, fileManager: fileManager)
+            )
+        }
+        let directoryMatches = classified.filter(\.isDirectory)
+        let fileMatches = classified.filter { !$0.isDirectory }
+        let selectedDirectories = Array(directoryMatches.prefix(maxEntries))
+        let remainingCapacity = maxEntries - selectedDirectories.count
+        let selectedFiles = Array(fileMatches.prefix(remainingCapacity))
+        let isTruncated = classified.count > selectedDirectories.count + selectedFiles.count
+        let directories = selectedDirectories.map {
+            makeEntry(url: $0.url, name: $0.name, isDirectory: true, fileManager: fileManager)
+        }
+        let files = selectedFiles.map {
+            makeEntry(url: $0.url, name: $0.name, isDirectory: false, fileManager: fileManager)
+        }
 
         return FileListing(
             directory: directory,
             iCloudEntry: iCloudEntry,
-            directories: entries.filter(\.isDirectory),
-            files: entries.filter { !$0.isDirectory },
+            directories: directories,
+            files: files,
             error: nil,
             isTruncated: isTruncated
         )
     }
 
-    private static func makeEntry(url: URL, name: String, fileManager: FileManager) -> FileEntry {
-        var isDirectory: ObjCBool = false
-        let exists = fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory)
-        let isPackage = (try? url.resourceValues(forKeys: [.isPackageKey]).isPackage) ?? false
+    private static func isBrowsableDirectory(_ url: URL, fileManager: FileManager) -> Bool {
+        let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey, .isPackageKey])
+        guard values?.isPackage != true else { return false }
+
+        // URLResourceValues describes the link itself. Follow symlinks so a link
+        // to a directory remains navigable, matching FileManager's prior behavior.
+        if values?.isSymbolicLink == true || values?.isDirectory == nil {
+            var isDirectory: ObjCBool = false
+            return fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory) && isDirectory.boolValue
+        }
+        return values?.isDirectory == true
+    }
+
+    private static func makeEntry(
+        url: URL,
+        name: String,
+        isDirectory: Bool,
+        fileManager: FileManager
+    ) -> FileEntry {
 
         let permissions: String
         if let mode = (try? fileManager.attributesOfItem(atPath: url.path))?[.posixPermissions] as? NSNumber {
@@ -149,7 +187,7 @@ enum FileBrowserEngine {
             url: url,
             name: name,
             // Packages (.app bundles and the like) open on Enter instead of descending.
-            isDirectory: exists && isDirectory.boolValue && !isPackage,
+            isDirectory: isDirectory,
             permissions: permissions
         )
     }

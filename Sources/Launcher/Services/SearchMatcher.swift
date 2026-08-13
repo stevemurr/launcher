@@ -1,25 +1,42 @@
 import Foundation
 
 enum SearchMatcher {
+    struct PreparedQuery {
+        fileprivate let normalized: String
+        fileprivate let tokens: [String]
+    }
+
+    static func prepare(_ query: String) -> PreparedQuery {
+        let normalized = normalize(query)
+        return PreparedQuery(
+            normalized: normalized,
+            tokens: normalized.split(separator: " ").map(String.init)
+        )
+    }
+
     static func score(query: String, title: String, keywords: String = "") -> Int? {
-        let normalizedQuery = normalize(query)
-        guard !normalizedQuery.isEmpty else { return 1 }
+        score(query: prepare(query), title: title, keywords: keywords)
+    }
+
+    /// Scores many records against one query without repeatedly performing
+    /// locale-aware folding and tokenization for every record.
+    static func score(query: PreparedQuery, title: String, keywords: String = "") -> Int? {
+        guard !query.normalized.isEmpty else { return 1 }
 
         let normalizedTitle = normalize(title)
         let normalizedKeywords = normalize(keywords)
         let searchable = normalizedTitle + " " + normalizedKeywords
-        let tokens = normalizedQuery.split(separator: " ").map(String.init)
 
         var total = 0
-        for token in tokens {
+        for token in query.tokens {
             guard let tokenScore = score(token: token, title: normalizedTitle, searchable: searchable) else {
                 return nil
             }
             total += tokenScore
         }
 
-        if normalizedTitle == normalizedQuery { total += 1_000 }
-        if normalizedTitle.hasPrefix(normalizedQuery) { total += 500 }
+        if normalizedTitle == query.normalized { total += 1_000 }
+        if normalizedTitle.hasPrefix(query.normalized) { total += 500 }
         return total
     }
 

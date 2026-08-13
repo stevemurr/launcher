@@ -179,6 +179,29 @@ final class FileBrowserEngineTests: XCTestCase {
         XCTAssertEqual(listing.directories.count + listing.files.count, FileBrowserEngine.maxEntries)
     }
 
+    func testTruncationDoesNotHideDirectoriesBehindEarlierSortingFiles() throws {
+        let big = root.appendingPathComponent("mixed-big", isDirectory: true)
+        try FileManager.default.createDirectory(at: big, withIntermediateDirectories: true)
+        for index in 0..<FileBrowserEngine.maxEntries {
+            try "x".write(
+                to: big.appendingPathComponent(String(format: "a-file-%03d.txt", index)),
+                atomically: true,
+                encoding: .utf8
+            )
+        }
+        try FileManager.default.createDirectory(
+            at: big.appendingPathComponent("zzz-folder", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+
+        let listing = FileBrowserEngine.list(directory: big, filter: "", home: home)
+
+        XCTAssertTrue(listing.isTruncated)
+        XCTAssertEqual(listing.directories.map(\.name), ["zzz-folder"])
+        XCTAssertEqual(listing.files.count, FileBrowserEngine.maxEntries - 1)
+        XCTAssertEqual(listing.directories.count + listing.files.count, FileBrowserEngine.maxEntries)
+    }
+
     // MARK: - iCloud Drive pin
 
     func testICloudEntryPinnedWhenListingHome() throws {

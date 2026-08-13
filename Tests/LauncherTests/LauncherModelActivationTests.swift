@@ -73,4 +73,25 @@ final class LauncherModelActivationTests: XCTestCase {
             )
         )
     }
+
+    func testQuickLookOnlyRekeysAVisibleLauncherWhileAppIsActive() {
+        XCTAssertTrue(
+            LauncherWindowLifecycle.shouldRekeyLauncher(
+                appIsActive: true,
+                launcherIsVisible: true
+            )
+        )
+        XCTAssertFalse(
+            LauncherWindowLifecycle.shouldRekeyLauncher(
+                appIsActive: false,
+                launcherIsVisible: true
+            )
+        )
+        XCTAssertFalse(
+            LauncherWindowLifecycle.shouldRekeyLauncher(
+                appIsActive: true,
+                launcherIsVisible: false
+            )
+        )
+    }
 }

@@ -10,6 +10,7 @@
 		042AA99859E02EEA18AFC12D /* LauncherStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 953AD0B06FE7658A0C361BB1 /* LauncherStyle.swift */; };
 		05C8191A6E24D2B2D09256D1 /* LauncherSearchField.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55A099A844B590130F3650B9 /* LauncherSearchField.swift */; };
 		0810007FA5B829870EA59EEA /* LauncherUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC585299115FB38609AB5E20 /* LauncherUITests.swift */; };
+		1085E97C3F3E3DCDA467D6EC /* LauncherViewCommandTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9559737EBF91FC010116325 /* LauncherViewCommandTests.swift */; };
 		186A63C2A6DA9494480A3961 /* QuickLookController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D368412C1CCFBA40D8AFCC0 /* QuickLookController.swift */; };
 		22ED689DD4A63D715867FA8D /* LauncherModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 959701A99FA58E1D01A1DE54 /* LauncherModel.swift */; };
 		24C3A77AA0CE567ED036B3AB /* ScriptTemplateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DDD9C9CA91E8C5CB6FC2B07 /* ScriptTemplateTests.swift */; };
@@ -105,6 +106,7 @@
 		A035320B669625CDA8270E83 /* HotKey.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotKey.swift; sourceTree = "<group>"; };
 		A3CD275177CC43FB2971B93F /* SearchMatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchMatcher.swift; sourceTree = "<group>"; };
 		A7687ECD124A9C4AB58CDE5B /* LauncherUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LauncherUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		A9559737EBF91FC010116325 /* LauncherViewCommandTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherViewCommandTests.swift; sourceTree = "<group>"; };
 		B75165610075AD476946FC54 /* LauncherTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LauncherTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		B8F840D5367FE63FF4EAA995 /* LauncherSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherSettings.swift; sourceTree = "<group>"; };
 		B8FF128CD13583C6368BA16A /* LoginItemTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginItemTests.swift; sourceTree = "<group>"; };
@@ -153,6 +155,7 @@
 				8FB3D185BDBC754C45F2C3F6 /* LauncherModelActivationTests.swift */,
 				8C8179AFAF0BE5421D6414F9 /* LauncherModelFileBrowserTests.swift */,
 				23A633A776AC0D79DECF9AD0 /* LauncherModelScriptTests.swift */,
+				A9559737EBF91FC010116325 /* LauncherViewCommandTests.swift */,
 				B8FF128CD13583C6368BA16A /* LoginItemTests.swift */,
 				88B060740AADCCDCDAC4283A /* ProcessScriptRunnerTests.swift */,
 				4C12D999401E6A23F3CF880E /* ScriptCommandCatalogTests.swift */,
@@ -430,6 +433,7 @@
 				345416DE7971D249E1271175 /* LauncherModelActivationTests.swift in Sources */,
 				F00697F53BA583B20761C231 /* LauncherModelFileBrowserTests.swift in Sources */,
 				B223CBCA95451CD251A56423 /* LauncherModelScriptTests.swift in Sources */,
+				1085E97C3F3E3DCDA467D6EC /* LauncherViewCommandTests.swift in Sources */,
 				ACD761DEB815A677F35E18F6 /* LoginItemTests.swift in Sources */,
 				99E3D069AC677C7055589DCD /* ProcessScriptRunnerTests.swift in Sources */,
 				F49E81393F20D2429524498C /* ScriptCommandCatalogTests.swift in Sources */,

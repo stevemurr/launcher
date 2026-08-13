@@ -1,3 +1,4 @@
+import Darwin
 import XCTest
 @testable import Launcher
 
@@ -21,7 +22,12 @@ final class ProcessScriptRunnerTests: XCTestCase {
     }
 
     @discardableResult
-    private func writeScript(_ name: String, body: String, executable: Bool = true) throws -> ScriptCommand {
+    private func writeScript(
+        _ name: String,
+        body: String,
+        executable: Bool = true,
+        mode: ScriptMode = .normal
+    ) throws -> ScriptCommand {
         let url = directory.appendingPathComponent(name)
         let contents = "#!/bin/sh\n# @raycast.title \(name)\n\(body)\n"
         try contents.write(to: url, atomically: true, encoding: .utf8)
@@ -29,7 +35,7 @@ final class ProcessScriptRunnerTests: XCTestCase {
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
         }
         return ScriptCommand(
-            id: url.path, url: url, title: name, mode: .normal,
+            id: url.path, url: url, title: name, mode: mode,
             packageName: nil, description: nil, needsConfirmation: false, arguments: []
         )
     }
@@ -38,22 +44,24 @@ final class ProcessScriptRunnerTests: XCTestCase {
         _ command: ScriptCommand,
         arguments: [String] = [],
         timeout: TimeInterval = 10
-    ) -> (output: String, chunks: Int, result: ScriptRunResult?) {
+    ) -> (output: String, chunks: Int, maxChunkBytes: Int, result: ScriptRunResult?) {
         var output = ""
         var chunks = 0
+        var maxChunkBytes = 0
         var result: ScriptRunResult?
         let done = expectation(description: "completion")
         runner.run(command, arguments: arguments,
             onOutput: { chunk in
                 output += chunk
                 chunks += 1
+                maxChunkBytes = max(maxChunkBytes, chunk.utf8.count)
             },
             onCompletion: { runResult in
                 result = runResult
                 done.fulfill()
             })
         wait(for: [done], timeout: timeout)
-        return (output, chunks, result)
+        return (output, chunks, maxChunkBytes, result)
     }
 
     func testEchoScriptSucceedsWithOutput() throws {
@@ -105,43 +113,344 @@ final class ProcessScriptRunnerTests: XCTestCase {
         var result: ScriptRunResult?
         var sawOutputBeforeCompletion = false
         var output = ""
+        let started = expectation(description: "script started")
         let done = expectation(description: "completion")
         runner.run(script, arguments: [],
-            onOutput: { output += $0 },
+            onOutput: {
+                output += $0
+                if output.contains("started") { started.fulfill() }
+            },
             onCompletion: {
                 result = $0
                 sawOutputBeforeCompletion = output.contains("started")
                 done.fulfill()
             })
 
+        wait(for: [started], timeout: 3)
         let startedAt = Date()
-        // Give the script a moment to start, then cancel.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { self.runner.cancel() }
+        runner.cancel()
         wait(for: [done], timeout: 8)
 
         XCTAssertEqual(result, .cancelled)
-        XCTAssertLessThan(Date().timeIntervalSince(startedAt), 5)
+        XCTAssertLessThan(
+            Date().timeIntervalSince(startedAt),
+            1.5,
+            "a cooperative process must not wait for the two-second descendant escalation"
+        )
         XCTAssertTrue(sawOutputBeforeCompletion, "final output must precede completion")
+    }
+
+    func testRunReturnsBeforeEnvironmentResolutionFinishes() throws {
+        let resolutionStarted = expectation(description: "environment resolution started")
+        let releaseResolution = DispatchSemaphore(value: 0)
+        runner = ProcessScriptRunner(environmentProvider: {
+            resolutionStarted.fulfill()
+            releaseResolution.wait()
+            return ProcessInfo.processInfo.environment.merging(["ASYNC_ENV": "enriched"]) { _, new in new }
+        })
+        let script = try writeScript("async-env.sh", body: "echo \"$ASYNC_ENV\"")
+        let done = expectation(description: "completion")
+        var output = ""
+        var result: ScriptRunResult?
+
+        let startedAt = Date()
+        XCTAssertTrue(runner.run(
+            script,
+            arguments: [],
+            onOutput: { output += $0 },
+            onCompletion: { result = $0; done.fulfill() }
+        ))
+        XCTAssertLessThan(
+            Date().timeIntervalSince(startedAt),
+            0.5,
+            "run() is called from AppKit's main thread and must not wait for shell startup"
+        )
+        XCTAssertTrue(runner.isRunning, "environment preparation reserves the runner")
+
+        wait(for: [resolutionStarted], timeout: 2)
+        releaseResolution.signal()
+        wait(for: [done], timeout: 5)
+        XCTAssertEqual(result, .success)
+        XCTAssertTrue(output.contains("enriched"), output)
+    }
+
+    func testCancelWhileResolvingEnvironmentNeverLaunchesScript() throws {
+        let resolutionStarted = expectation(description: "environment resolution started")
+        let releaseResolution = DispatchSemaphore(value: 0)
+        runner = ProcessScriptRunner(environmentProvider: {
+            resolutionStarted.fulfill()
+            releaseResolution.wait()
+            return ProcessInfo.processInfo.environment
+        })
+        let marker = directory.appendingPathComponent("must-not-exist")
+        let script = try writeScript("cancel-preparation.sh", body: "touch \"\(marker.path)\"")
+        let done = expectation(description: "completion")
+        var results: [ScriptRunResult] = []
+
+        XCTAssertTrue(runner.run(
+            script,
+            arguments: [],
+            onOutput: { _ in },
+            onCompletion: { results.append($0); done.fulfill() }
+        ))
+        wait(for: [resolutionStarted], timeout: 2)
+
+        runner.cancel()
+        wait(for: [done], timeout: 2)
+        XCTAssertEqual(results, [.cancelled])
+        XCTAssertFalse(runner.isRunning)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+
+        // Let the late resolver callback arrive and prove its run token cannot
+        // resurrect the cancelled process or complete it a second time.
+        releaseResolution.signal()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        XCTAssertEqual(results, [.cancelled])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+    }
+
+    func testDeinitTerminatesAndReapsActiveProcessGroup() throws {
+        let pidFile = directory.appendingPathComponent("abandoned.pid")
+        let script = try writeScript("abandoned.sh", body: """
+        trap '' TERM HUP
+        echo $$ > '\(pidFile.path)'
+        echo started
+        while :; do sleep 30; done
+        """)
+        var localRunner: ProcessScriptRunner? = ProcessScriptRunner(
+            environmentProvider: { ProcessInfo.processInfo.environment }
+        )
+        let started = expectation(description: "process started")
+
+        XCTAssertTrue(localRunner?.run(
+            script,
+            arguments: [],
+            onOutput: { chunk in
+                if chunk.contains("started") { started.fulfill() }
+            },
+            onCompletion: { _ in }
+        ) == true)
+        wait(for: [started], timeout: 3)
+        let processPID = try XCTUnwrap(
+            pid_t(String(contentsOf: pidFile, encoding: .utf8)
+                .trimmingCharacters(in: .whitespacesAndNewlines))
+        )
+        defer { _ = kill(processPID, SIGKILL) }
+
+        localRunner = nil
+
+        let goneDeadline = Date().addingTimeInterval(3)
+        while kill(processPID, 0) == 0, Date() < goneDeadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
+        XCTAssertTrue(
+            kill(processPID, 0) == -1 && errno == ESRCH,
+            "dropping an active runner must not leak or zombie its process-group leader"
+        )
+    }
+
+    func testCancelThenImmediateDeinitSchedulesOneCleanup() throws {
+        let pidFile = directory.appendingPathComponent("cancel-deinit.pid")
+        let script = try writeScript("cancel-deinit.sh", body: """
+        trap '' TERM HUP
+        echo $$ > '\(pidFile.path)'
+        echo started
+        while :; do sleep 30; done
+        """)
+        var localRunner: ProcessScriptRunner? = ProcessScriptRunner(
+            environmentProvider: { ProcessInfo.processInfo.environment }
+        )
+        let started = expectation(description: "process started")
+        XCTAssertTrue(localRunner?.run(
+            script,
+            arguments: [],
+            onOutput: { if $0.contains("started") { started.fulfill() } },
+            onCompletion: { _ in }
+        ) == true)
+        wait(for: [started], timeout: 3)
+        let processPID = try XCTUnwrap(
+            pid_t(String(contentsOf: pidFile, encoding: .utf8)
+                .trimmingCharacters(in: .whitespacesAndNewlines))
+        )
+        defer { _ = kill(processPID, SIGKILL) }
+
+        localRunner?.cancel()
+        localRunner = nil
+
+        let goneDeadline = Date().addingTimeInterval(3)
+        while kill(processPID, 0) == 0, Date() < goneDeadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
+        XCTAssertTrue(
+            kill(processPID, 0) == -1 && errno == ESRCH,
+            "cancel plus owner release must share one cleanup/reaper"
+        )
+    }
+
+    func testCancelKillsTermIgnoringDescendantProcessGroup() throws {
+        let script = try writeScript("tree.sh", body: """
+        /bin/sh -c 'trap "" TERM HUP; while :; do sleep 30; done' &
+        echo "child=$!"
+        wait
+        """)
+        let done = expectation(description: "completion")
+        var childPID: pid_t = -1
+        var result: ScriptRunResult?
+        let startedAt = Date()
+
+        runner.run(
+            script,
+            arguments: [],
+            onOutput: { [weak self] chunk in
+                guard childPID < 0,
+                      let range = chunk.range(of: #"child=(\d+)"#, options: .regularExpression),
+                      let value = Int32(chunk[range].dropFirst("child=".count))
+                else { return }
+                childPID = value
+                self?.runner.cancel()
+            },
+            onCompletion: {
+                result = $0
+                done.fulfill()
+            }
+        )
+
+        wait(for: [done], timeout: 7)
+        defer {
+            if childPID > 0 { _ = kill(childPID, SIGKILL) }
+        }
+        XCTAssertGreaterThan(childPID, 0)
+        XCTAssertEqual(result, .cancelled)
+        XCTAssertLessThan(
+            Date().timeIntervalSince(startedAt),
+            1.5,
+            "completion need not wait for delayed cleanup of a TERM-ignoring descendant"
+        )
+
+        // The old leader remains unreaped as a PGID identity anchor during its
+        // grace period, but that cleanup token is independent of current-run
+        // state and must neither block nor signal a newly accepted run.
+        let second = try writeScript("after-cancel.sh", body: "echo second-run-safe")
+        let secondRun = runToCompletion(second)
+        XCTAssertEqual(secondRun.result, .success)
+        XCTAssertTrue(secondRun.output.contains("second-run-safe"))
+
+        let goneDeadline = Date().addingTimeInterval(3)
+        while childPID > 0, kill(childPID, 0) == 0, Date() < goneDeadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
+        XCTAssertTrue(
+            childPID > 0 && kill(childPID, 0) == -1 && errno == ESRCH,
+            "cancelling the script must not leave its TERM-ignoring child alive"
+        )
     }
 
     func testBackgroundedDescendantDoesNotBlockCompletion() throws {
         // The direct child (the shell script) exits almost immediately, but
-        // it leaves behind a descendant that inherits the shared
-        // stdout/stderr pipe and keeps its write end open for well past the
-        // assertion window below. A blocking drain (readToEnd, which waits
-        // for EOF on the pipe) would wait for that descendant to exit too,
-        // hanging completion — and, transitively, isRunning/cancel() from
-        // the main thread, since they synchronize on the same serial queue
-        // — far past this timeout. The fix drains only what's already
-        // buffered, non-blockingly, so completion should arrive almost
-        // immediately regardless of the lingering descendant.
-        let script = try writeScript("background.sh", body: "echo done\nsleep 20 &")
+        // starts a descendant that inherits the shared stdout/stderr pipe. A
+        // blocking drain would wait for that descendant's EOF. Normal success
+        // deliberately preserves intentional background jobs, so the test owns
+        // deterministic cleanup rather than changing product semantics.
+        let pidFile = directory.appendingPathComponent("background-child.pid")
+        defer {
+            if let raw = try? String(contentsOf: pidFile, encoding: .utf8),
+               let childPID = pid_t(raw.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                _ = kill(childPID, SIGKILL)
+            }
+        }
+        let script = try writeScript(
+            "background.sh",
+            body: "sleep 20 & echo $! > '\(pidFile.path)'\necho done"
+        )
 
         let run = runToCompletion(script, timeout: 4)
 
         XCTAssertEqual(run.result, .success)
         XCTAssertTrue(run.output.contains("done"))
         XCTAssertFalse(runner.isRunning)
+        let childPID = try XCTUnwrap(
+            pid_t(String(contentsOf: pidFile, encoding: .utf8)
+                .trimmingCharacters(in: .whitespacesAndNewlines))
+        )
+        XCTAssertEqual(
+            kill(childPID, 0),
+            0,
+            "successful scripts may intentionally leave background jobs running"
+        )
+    }
+
+    func testFastOutputBurstIsBoundedBeforeMainQueueDelivery() throws {
+        let byteCount = 2_000_000
+        let script = try writeScript(
+            "burst.sh",
+            body: "/usr/bin/yes x | /usr/bin/head -c \(byteCount)"
+        )
+
+        let run = runToCompletion(script, timeout: 8)
+
+        XCTAssertEqual(run.result, .success)
+        XCTAssertFalse(run.output.isEmpty)
+        XCTAssertLessThanOrEqual(
+            run.maxChunkBytes,
+            ProcessScriptRunner.maximumPendingOutputBytes,
+            "one coalescing window must not dispatch output the UI would immediately discard"
+        )
+    }
+
+    func testSilentOutputFloodSkipsOutputDelivery() throws {
+        let script = try writeScript(
+            "silent-burst.sh",
+            body: "/usr/bin/yes x | /usr/bin/head -c 2000000",
+            mode: .silent
+        )
+        let done = expectation(description: "completion")
+        var outputCallbacks = 0
+        var result: ScriptRunResult?
+
+        XCTAssertTrue(runner.run(
+            script,
+            arguments: [],
+            onOutput: { _ in outputCallbacks += 1 },
+            onCompletion: { result = $0; done.fulfill() }
+        ))
+        wait(for: [done], timeout: 5)
+
+        XCTAssertEqual(result, .success)
+        XCTAssertEqual(
+            outputCallbacks,
+            0,
+            "silent mode must drain bytes without decoding or dispatching output"
+        )
+    }
+
+    func testBackgroundOutputProducerCannotSpinFinalDrain() throws {
+        let pidFile = directory.appendingPathComponent("background-writer.pid")
+        defer {
+            if let raw = try? String(contentsOf: pidFile, encoding: .utf8),
+               let childPID = pid_t(raw.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                _ = kill(childPID, SIGKILL)
+            }
+        }
+        let script = try writeScript("background-writer.sh", body: """
+        /usr/bin/yes x &
+        echo $! > '\(pidFile.path)'
+        sleep 0.2
+        exit 0
+        """)
+
+        let startedAt = Date()
+        let run = runToCompletion(script, timeout: 4)
+
+        XCTAssertEqual(run.result, .success)
+        XCTAssertLessThan(
+            Date().timeIntervalSince(startedAt),
+            2,
+            "a continuously readable inherited pipe must not make the final drain loop forever"
+        )
+        XCTAssertLessThanOrEqual(
+            run.maxChunkBytes,
+            ProcessScriptRunner.maximumPendingOutputBytes
+        )
     }
 
     func testNonExecutableScriptFallsBackToBash() throws {

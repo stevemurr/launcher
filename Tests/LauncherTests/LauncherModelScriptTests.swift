@@ -110,6 +110,266 @@ final class LauncherModelScriptTests: XCTestCase {
         XCTAssertEqual(item?.subtitle, "Demo")
     }
 
+    func testChangingScriptsDirectoryImmediatelyInvalidatesOldCommands() throws {
+        try writeScript("old.sh", header: "# @raycast.title Old Directory Command", body: "echo old")
+        let model = makeModel()
+        waitForScripts(in: model, query: "old directory")
+        XCTAssertTrue(model.results.contains { $0.title == "Old Directory Command" })
+
+        let newDirectory = directory.appendingPathComponent("new-scripts", isDirectory: true)
+        try FileManager.default.createDirectory(at: newDirectory, withIntermediateDirectories: true)
+        model.updateScriptsDirectory(newDirectory)
+
+        XCTAssertFalse(model.results.contains { $0.title == "Old Directory Command" })
+        XCTAssertNil(model.selectedScript)
+    }
+
+    func testStartupSchedulesOnlyOneScriptScan() {
+        let scanned = expectation(description: "scripts scanned")
+        let lock = NSLock()
+        var calls = 0
+        let settings = LauncherSettings(defaults: defaults)
+        settings.save(scriptsDirectory: directory)
+        let model = LauncherModel(
+            settings: settings,
+            isUITesting: false,
+            loginItems: QuietLoginItemService(),
+            scriptDiscoverer: { _ in
+                lock.lock()
+                calls += 1
+                lock.unlock()
+                scanned.fulfill()
+                return []
+            }
+        )
+
+        // Mirrors AppDelegate startup order.
+        model.loadApplications()
+        model.prepareForPresentation()
+
+        wait(for: [scanned], timeout: 2)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        lock.lock()
+        let finalCalls = calls
+        lock.unlock()
+        XCTAssertEqual(finalCalls, 1)
+    }
+
+    func testRapidPresentationsCoalesceScriptScansAndStayBounded() {
+        let firstStarted = expectation(description: "first scan started")
+        let latestStarted = expectation(description: "latest scan started")
+        let firstGate = DispatchSemaphore(value: 0)
+        defer { firstGate.signal() }
+        let lock = NSLock()
+        var calls = 0
+        var active = 0
+        var maximumActive = 0
+        let settings = LauncherSettings(defaults: defaults)
+        settings.save(scriptsDirectory: directory)
+        let model = LauncherModel(
+            settings: settings,
+            isUITesting: false,
+            loginItems: QuietLoginItemService(),
+            scriptDiscoverer: { _ in
+                lock.lock()
+                calls += 1
+                let call = calls
+                active += 1
+                maximumActive = max(maximumActive, active)
+                lock.unlock()
+
+                if call == 1 {
+                    firstStarted.fulfill()
+                    firstGate.wait()
+                } else if call == 2 {
+                    latestStarted.fulfill()
+                }
+
+                lock.lock()
+                active -= 1
+                lock.unlock()
+                return []
+            }
+        )
+
+        for _ in 0..<100 { model.prepareForPresentation() }
+        wait(for: [firstStarted], timeout: 2)
+        for _ in 0..<100 { model.prepareForPresentation() }
+        wait(for: [latestStarted], timeout: 3)
+        firstGate.signal()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+
+        lock.lock()
+        let finalCalls = calls
+        let finalMaximumActive = maximumActive
+        lock.unlock()
+        XCTAssertEqual(finalCalls, 2, "one active and only the latest pending scan should run")
+        XCTAssertEqual(finalMaximumActive, 2, "the latest scan may overtake one obsolete blocked mount")
+    }
+
+    func testTwoHungScriptScansKeepOnlyNewestPendingRequest() {
+        let firstStarted = expectation(description: "first scan started")
+        let secondStarted = expectation(description: "second scan started")
+        let newestStarted = expectation(description: "newest pending scan started")
+        let firstGate = DispatchSemaphore(value: 0)
+        let secondGate = DispatchSemaphore(value: 0)
+        defer {
+            firstGate.signal()
+            secondGate.signal()
+        }
+
+        let lock = NSLock()
+        var scannedDirectories: [String] = []
+        var active = 0
+        var maximumActive = 0
+        let settings = LauncherSettings(defaults: defaults)
+        settings.save(scriptsDirectory: directory)
+        let model = LauncherModel(
+            settings: settings,
+            isUITesting: false,
+            loginItems: QuietLoginItemService(),
+            scriptDiscoverer: { directory in
+                lock.lock()
+                scannedDirectories.append(directory.lastPathComponent)
+                let call = scannedDirectories.count
+                active += 1
+                maximumActive = max(maximumActive, active)
+                lock.unlock()
+
+                switch call {
+                case 1:
+                    firstStarted.fulfill()
+                    firstGate.wait()
+                case 2:
+                    secondStarted.fulfill()
+                    secondGate.wait()
+                case 3:
+                    newestStarted.fulfill()
+                default:
+                    break
+                }
+
+                lock.lock()
+                active -= 1
+                lock.unlock()
+                return []
+            }
+        )
+
+        model.updateScriptsDirectory(directory.appendingPathComponent("hung-first", isDirectory: true))
+        wait(for: [firstStarted], timeout: 2)
+        model.updateScriptsDirectory(directory.appendingPathComponent("hung-second", isDirectory: true))
+        wait(for: [secondStarted], timeout: 2)
+
+        for index in 0..<100 {
+            model.updateScriptsDirectory(
+                directory.appendingPathComponent("pending-\(index)", isDirectory: true)
+            )
+        }
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+
+        lock.lock()
+        let callsWhileHung = scannedDirectories.count
+        let maximumWhileHung = maximumActive
+        lock.unlock()
+        XCTAssertEqual(callsWhileHung, 2, "two occupied lanes must retain newer input without starting it")
+        XCTAssertEqual(maximumWhileHung, 2)
+
+        firstGate.signal()
+        wait(for: [newestStarted], timeout: 2)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+
+        lock.lock()
+        let directoriesAfterNewest = scannedDirectories
+        let finalMaximumActive = maximumActive
+        lock.unlock()
+        XCTAssertEqual(directoriesAfterNewest, ["hung-first", "hung-second", "pending-99"])
+        XCTAssertEqual(finalMaximumActive, 2)
+
+        secondGate.signal()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        lock.lock()
+        let finalCallCount = scannedDirectories.count
+        lock.unlock()
+        XCTAssertEqual(finalCallCount, 3, "releasing both lanes must not reveal a backlog of superseded work")
+    }
+
+    func testSavingCommandUpdatesCatalogWithoutFullRescan() {
+        let lock = NSLock()
+        var calls = 0
+        let settings = LauncherSettings(defaults: defaults)
+        settings.save(scriptsDirectory: directory)
+        let model = LauncherModel(
+            settings: settings,
+            isUITesting: false,
+            loginItems: QuietLoginItemService(),
+            scriptDiscoverer: { _ in
+                lock.lock()
+                calls += 1
+                lock.unlock()
+                return []
+            }
+        )
+        model.scriptDraft.title = "Incremental Save"
+
+        model.saveScriptDraft(andOpen: false)
+
+        lock.lock()
+        let finalCalls = calls
+        lock.unlock()
+        XCTAssertEqual(finalCalls, 0, "the reconciliatory scan is debounced off the save call")
+        XCTAssertTrue(model.results.contains { $0.title == "Incremental Save" })
+    }
+
+    func testSaveDuringColdScanReconcilesAllScripts() throws {
+        try writeScript("existing.sh", header: "# @raycast.title Existing Command", body: "echo old")
+        let firstScanStarted = expectation(description: "cold scan started")
+        let reconciliationFinished = expectation(description: "reconciliation finished")
+        let firstGate = DispatchSemaphore(value: 0)
+        let lock = NSLock()
+        var calls = 0
+        let settings = LauncherSettings(defaults: defaults)
+        settings.save(scriptsDirectory: directory)
+        let model = LauncherModel(
+            settings: settings,
+            isUITesting: false,
+            loginItems: QuietLoginItemService(),
+            scriptDiscoverer: { directory in
+                lock.lock()
+                calls += 1
+                let call = calls
+                lock.unlock()
+                if call == 1 {
+                    firstScanStarted.fulfill()
+                    firstGate.wait()
+                }
+                let commands = ScriptCommandCatalog.discoverScripts(in: directory)
+                if call == 2 { reconciliationFinished.fulfill() }
+                return commands
+            }
+        )
+
+        model.rescanScripts()
+        wait(for: [firstScanStarted], timeout: 2)
+        model.scriptDraft.title = "New Command"
+        model.saveScriptDraft(andOpen: false)
+        XCTAssertTrue(model.results.contains { $0.title == "New Command" })
+
+        firstGate.signal()
+        wait(for: [reconciliationFinished], timeout: 3)
+        let deadline = Date().addingTimeInterval(2)
+        while Date() < deadline {
+            model.query = "existing command"
+            if model.results.contains(where: { $0.title == "Existing Command" }) { break }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+
+        model.query = "new command"
+        XCTAssertTrue(model.results.contains { $0.title == "New Command" })
+        model.query = "existing command"
+        XCTAssertTrue(model.results.contains { $0.title == "Existing Command" })
+    }
+
     func testCreateScriptCommandItemIsSearchable() {
         let model = makeModel()
         model.query = "create script"
@@ -192,6 +452,20 @@ final class LauncherModelScriptTests: XCTestCase {
         waitUntil { model.scriptRun?.phase == .finished(.success) }
     }
 
+    func testSilentModeDiscardsRunnerOutputBeforePublishingIt() throws {
+        try writeScript("quiet-stub.sh", header: "# @raycast.title Quiet Stub\n# @raycast.mode silent", body: "echo shh")
+        let runner = StubScriptRunner()
+        let model = makeModel(runner: runner)
+        waitForScripts(in: model, query: "quiet stub")
+        model.select(index: model.results.firstIndex { $0.kind == .scriptCommand }!)
+
+        model.handleSubmit()
+        runner.emit(String(repeating: "x", count: 200_000))
+
+        XCTAssertEqual(model.scriptRun?.output, "")
+        runner.finish(.success)
+    }
+
     func testNeedsConfirmationFlow() throws {
         try writeScript("danger.sh", header: "# @raycast.title Danger Zone\n# @raycast.needsConfirmation true", body: "echo boom")
         let model = makeModel()
@@ -231,6 +505,76 @@ final class LauncherModelScriptTests: XCTestCase {
         model.handleSubmit()
         waitUntil { model.scriptRun?.phase == .finished(.success) }
         XCTAssertTrue(model.scriptRun?.output.contains("got:World") == true)
+    }
+
+    func testSameIDRescanAddingArgumentPreservesOnlyUnchangedValues() throws {
+        try writeScript(
+            "schema-add.sh",
+            header: "# @raycast.title Schema Add\n# @raycast.argument1 { \"placeholder\": \"Name\" }",
+            body: "echo hi"
+        )
+        let model = makeModel()
+        waitForScripts(in: model, query: "schema add")
+        model.select(index: model.results.firstIndex { $0.kind == .scriptCommand }!)
+        model.argumentValues[0] = "Ada"
+        model.focus(.argument(0))
+
+        try writeScript(
+            "schema-add.sh",
+            header: "# @raycast.title Schema Add\n# @raycast.argument1 { \"placeholder\": \"Name\" }\n# @raycast.argument2 { \"placeholder\": \"City\" }",
+            body: "echo hi"
+        )
+        model.rescanScripts()
+        waitUntil { model.selectedScript?.arguments.count == 2 }
+
+        XCTAssertEqual(model.argumentValues, ["Ada", ""])
+        XCTAssertEqual(model.focusTarget, .search)
+    }
+
+    func testSameIDRescanRemovingArgumentTrimsValuesAndPreservesSurvivors() throws {
+        try writeScript(
+            "schema-remove.sh",
+            header: "# @raycast.title Schema Remove\n# @raycast.argument1 { \"placeholder\": \"First\" }\n# @raycast.argument2 { \"placeholder\": \"Second\" }",
+            body: "echo hi"
+        )
+        let model = makeModel()
+        waitForScripts(in: model, query: "schema remove")
+        model.select(index: model.results.firstIndex { $0.kind == .scriptCommand }!)
+        model.argumentValues = ["one", "two"]
+
+        try writeScript(
+            "schema-remove.sh",
+            header: "# @raycast.title Schema Remove\n# @raycast.argument1 { \"placeholder\": \"First\" }",
+            body: "echo hi"
+        )
+        model.rescanScripts()
+        waitUntil { model.selectedScript?.arguments.count == 1 }
+
+        XCTAssertEqual(model.argumentValues, ["one"])
+    }
+
+    func testSameIDRescanChangingArgumentSchemaClearsStaleValue() throws {
+        try writeScript(
+            "schema-change.sh",
+            header: "# @raycast.title Schema Change\n# @raycast.argument1 { \"placeholder\": \"Name\" }",
+            body: "echo hi"
+        )
+        let model = makeModel()
+        waitForScripts(in: model, query: "schema change")
+        model.select(index: model.results.firstIndex { $0.kind == .scriptCommand }!)
+        model.argumentValues[0] = "Ada"
+
+        try writeScript(
+            "schema-change.sh",
+            header: "# @raycast.title Schema Change\n# @raycast.argument1 { \"placeholder\": \"Username\", \"optional\": true }",
+            body: "echo hi"
+        )
+        model.rescanScripts()
+        waitUntil {
+            model.selectedScript?.arguments == [ScriptArgument(placeholder: "Username", optional: true)]
+        }
+
+        XCTAssertEqual(model.argumentValues, [""])
     }
 
     func testFocusCycleWithTwoArguments() throws {
@@ -480,6 +824,28 @@ final class LauncherModelScriptTests: XCTestCase {
         let parsed = ScriptMetadataParser.parse(contents: contents, url: url)
         XCTAssertEqual(parsed?.title, "New Name")
         XCTAssertEqual(parsed?.mode, .silent)
+    }
+
+    func testEditedScriptPreservesOptionalArgumentInImmediateCatalog() throws {
+        try writeScript(
+            "optional-edit.sh",
+            header: "# @raycast.title Optional Edit\n# @raycast.argument1 { \"type\": \"text\", \"placeholder\": \"Maybe\", \"optional\": true }",
+            body: "echo optional"
+        )
+        let model = makeModel()
+        waitForScripts(in: model, query: "optional edit")
+        model.select(index: model.results.firstIndex { $0.kind == .scriptCommand }!)
+
+        model.perform(.editScript)
+        model.scriptDraft.title = "Optional Edited"
+        model.saveScriptDraft(andOpen: false)
+
+        let command = try XCTUnwrap(model.results.compactMap { item -> ScriptCommand? in
+            guard case let .script(command) = item.destination,
+                  command.title == "Optional Edited" else { return nil }
+            return command
+        }.first)
+        XCTAssertEqual(command.arguments, [ScriptArgument(placeholder: "Maybe", optional: true)])
     }
 
     // MARK: - ⌘P output pane

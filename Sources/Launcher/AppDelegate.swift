@@ -28,16 +28,23 @@ final class LauncherPanel: NSPanel {
         panel.delegate = nil
         // Re-key the launcher when the preview closes so the normal
         // hide-on-resign behavior resumes afterwards.
-        // Only re-key the launcher if it is still on screen. If the user dismissed
-        // it (orderOut) while Quick Look was up, isVisible is false and we must not
-        // resurrect it.
-        if isVisible {
+        // Only re-key while the launcher is still on screen and its app is active.
+        // Closing Quick Look during hide or deactivation must not resurrect or
+        // reactivate the launcher.
+        if LauncherWindowLifecycle.shouldRekeyLauncher(
+            appIsActive: NSApp.isActive,
+            launcherIsVisible: isVisible
+        ) {
             makeKeyAndOrderFront(nil)
         }
     }
 }
 
 enum LauncherWindowLifecycle {
+    static func shouldRekeyLauncher(appIsActive: Bool, launcherIsVisible: Bool) -> Bool {
+        appIsActive && launcherIsVisible
+    }
+
     static func shouldHideLauncher(
         appIsActive: Bool,
         launcherIsKey: Bool,
@@ -106,6 +113,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
+    }
+
+    func applicationDidResignActive(_ notification: Notification) {
+        guard !isUITesting else { return }
+        hideLauncher()
     }
 
     func windowDidResignKey(_ notification: Notification) {
@@ -233,8 +245,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func hideLauncher() {
-        // Order out first so the collapse is neither animated nor visible.
+        // Order out first so ending Quick Look control cannot re-key the launcher.
         panel?.orderOut(nil)
+        quickLookController.dismiss()
         model.dismissOutputPane()
     }
 

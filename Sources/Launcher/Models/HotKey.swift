@@ -56,6 +56,13 @@ struct HotKey: Codable, Equatable, Sendable {
         modifiers.carbonValue
     }
 
+    /// Shift-only global shortcuts collide with ordinary uppercase typing.
+    /// Require at least one modifier that is conventionally used to reserve a
+    /// command chord; Shift may still be combined with any of them.
+    var isSafeGlobalShortcut: Bool {
+        !modifiers.intersection([.control, .option, .command]).isEmpty
+    }
+
     func matches(_ event: NSEvent) -> Bool {
         UInt32(event.keyCode) == keyCode
             && HotKeyModifiers(eventFlags: event.modifierFlags) == modifiers

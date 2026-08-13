@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-enum LauncherKeyCommand {
+enum LauncherKeyCommand: Equatable {
     case moveDown
     case moveUp
     case submit
@@ -18,6 +18,22 @@ enum LauncherKeyCommand {
     case quickLook
     case showInFinder
     case copyPath
+    case copyScriptContents
+
+    var acceptsKeyRepeat: Bool {
+        self == .moveUp || self == .moveDown
+    }
+
+    init?(textCommandSelector: Selector) {
+        switch textCommandSelector {
+        case #selector(NSResponder.moveUp(_:)):
+            self = .moveUp
+        case #selector(NSResponder.moveDown(_:)):
+            self = .moveDown
+        default:
+            return nil
+        }
+    }
 }
 
 struct LauncherSearchField: NSViewRepresentable {
@@ -25,8 +41,15 @@ struct LauncherSearchField: NSViewRepresentable {
     let focusToken: Int
     var isFocusTarget = true
     var placeholder = "Search applications and settings"
+    var accessibilityLabel = "Search applications and settings"
     var onFocus: (() -> Void)?
     let onCommand: (LauncherKeyCommand) -> Void
+
+    static func contextualAccessibilityLabel(for directory: URL?) -> String {
+        guard let directory else { return "Search applications and settings" }
+        let path = directory.path
+        return "Search files in \(path == "/" ? path : path + "/")"
+    }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(parent: self)
@@ -47,13 +70,14 @@ struct LauncherSearchField: NSViewRepresentable {
         field.lineBreakMode = .byTruncatingTail
         field.identifier = NSUserInterfaceItemIdentifier("launcher.search")
         field.setAccessibilityIdentifier("launcher.search")
-        field.setAccessibilityLabel("Search applications and settings")
+        field.setAccessibilityLabel(accessibilityLabel)
         return field
     }
 
     func updateNSView(_ field: KeyHandlingTextField, context: Context) {
         if field.stringValue != text { field.stringValue = text }
         if field.placeholderString != placeholder { field.placeholderString = placeholder }
+        field.setAccessibilityLabel(accessibilityLabel)
         field.onCommand = onCommand
         field.onFocus = onFocus
         context.coordinator.parent = self
@@ -84,16 +108,9 @@ struct LauncherSearchField: NSViewRepresentable {
         // (caret movement) before they can reach the text field's key
         // handling, so intercept them here and drive the list selection.
         func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
-            switch commandSelector {
-            case #selector(NSResponder.moveUp(_:)):
-                parent.onCommand(.moveUp)
-                return true
-            case #selector(NSResponder.moveDown(_:)):
-                parent.onCommand(.moveDown)
-                return true
-            default:
-                return false
-            }
+            guard let command = LauncherKeyCommand(textCommandSelector: commandSelector) else { return false }
+            parent.onCommand(command)
+            return true
         }
     }
 }
@@ -120,57 +137,46 @@ final class KeyHandlingTextField: NSTextField {
 
     private func handle(_ event: NSEvent) -> Bool {
         let characters = event.charactersIgnoringModifiers?.lowercased()
+        let command: LauncherKeyCommand
         if event.modifierFlags.contains(.command), characters == "k" {
-            onCommand?(.toggleActions)
-            return true
-        }
-        if event.modifierFlags.contains(.command), characters == "," {
-            onCommand?(.settings)
-            return true
-        }
-        if event.modifierFlags.contains(.command), characters == "t" {
-            onCommand?(.toggleRunPalette)
-            return true
-        }
-        if event.modifierFlags.contains(.command), characters == "p" {
-            onCommand?(.toggleOutputPane)
-            return true
-        }
-        if event.modifierFlags.contains(.command), characters == "e" {
-            onCommand?(.editScript)
-            return true
-        }
-        if event.modifierFlags.contains(.control), characters == "x" {
-            onCommand?(.deleteScript)
-            return true
-        }
-        if event.modifierFlags.contains(.command), event.modifierFlags.contains(.shift), characters == "c" {
-            onCommand?(.copyPath)
-            return true
-        }
-        if event.modifierFlags.contains(.command), characters == "f" {
-            onCommand?(.showInFinder)
-            return true
-        }
-        if event.modifierFlags.contains(.command), characters == "y" {
-            onCommand?(.quickLook)
-            return true
+            command = .toggleActions
+        } else if event.modifierFlags.contains(.command), characters == "," {
+            command = .settings
+        } else if event.modifierFlags.contains(.command), characters == "t" {
+            command = .toggleRunPalette
+        } else if event.modifierFlags.contains(.command), characters == "p" {
+            command = .toggleOutputPane
+        } else if event.modifierFlags.contains(.command), characters == "e" {
+            command = .editScript
+        } else if event.modifierFlags.contains(.control), characters == "x" {
+            command = .deleteScript
+        } else if event.modifierFlags.contains(.command),
+                  event.modifierFlags.contains(.option),
+                  characters == "c" {
+            command = .copyScriptContents
+        } else if event.modifierFlags.contains(.command),
+                  event.modifierFlags.contains(.shift),
+                  characters == "c" {
+            command = .copyPath
+        } else if event.modifierFlags.contains(.command), characters == "f" {
+            command = .showInFinder
+        } else if event.modifierFlags.contains(.command), characters == "y" {
+            command = .quickLook
+        } else {
+            switch event.keyCode {
+            case 125: command = .moveDown
+            case 126: command = .moveUp
+            case 36, 76: command = event.modifierFlags.contains(.command) ? .openWith : .submit
+            case 53: command = .escape
+            case 48: command = event.modifierFlags.contains(.shift) ? .focusPrevious : .focusNext
+            default: return false
+            }
         }
 
-        switch event.keyCode {
-        case 125:
-            onCommand?(.moveDown)
-        case 126:
-            onCommand?(.moveUp)
-        case 36, 76:
-            onCommand?(event.modifierFlags.contains(.command) ? .openWith : .submit)
-        case 53:
-            onCommand?(.escape)
-        case 48:
-            onCommand?(event.modifierFlags.contains(.shift) ? .focusPrevious : .focusNext)
-        default:
-            return false
-        }
+        // A held Return/Escape/shortcut must not cascade through multiple UI
+        // states after the first event dismisses a confirmation or palette.
+        guard !event.isARepeat || command.acceptsKeyRepeat else { return true }
+        onCommand?(command)
         return true
     }
 }

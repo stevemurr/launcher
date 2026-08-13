@@ -63,6 +63,25 @@ final class CalculatorEngineTests: XCTestCase {
         XCTAssertEqual(result("1000*1000"), "1,000,000")
     }
 
+    func testScientificNotationResultsRoundTripAsInput() {
+        guard let formatted = result("1000000000000000*1") else {
+            XCTFail("expected a formatted scientific-notation result")
+            return
+        }
+
+        XCTAssertEqual(formatted, "1e15")
+        XCTAssertEqual(
+            CalculatorEngine.evaluate("\(formatted)+1")?.result,
+            1_000_000_000_000_001
+        )
+        XCTAssertEqual(result("1e-10*2"), "2e-10")
+        XCTAssertEqual(result("1E+3+1"), "1,001")
+    }
+
+    func testBareEAfterNumberRemainsEulerImplicitMultiplication() {
+        XCTAssertEqual(CalculatorEngine.evaluate("2e")?.result ?? 0, 2 * M_E, accuracy: 1e-12)
+    }
+
     func testQueriesThatShouldNotBeCalculations() {
         XCTAssertNil(CalculatorEngine.evaluate("safari"))
         XCTAssertNil(CalculatorEngine.evaluate("42"))

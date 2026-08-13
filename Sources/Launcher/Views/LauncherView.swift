@@ -13,6 +13,14 @@ struct LauncherRootView: View {
         reduceMotion ? nil : .easeInOut(duration: LauncherStyle.drawerAnimationDuration)
     }
 
+    private var paletteAnimation: Animation? {
+        reduceMotion ? nil : .easeOut(duration: 0.12)
+    }
+
+    private func paletteTransition(anchor: UnitPoint) -> AnyTransition {
+        reduceMotion ? .identity : .opacity.combined(with: .scale(scale: 0.98, anchor: anchor))
+    }
+
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
             VisualEffectView(material: .popover, blendingMode: .behindWindow)
@@ -34,28 +42,28 @@ struct LauncherRootView: View {
                 ActionsPalette(model: model)
                     .padding(.trailing, 8)
                     .padding(.bottom, 45)
-                    .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .bottomTrailing)))
+                    .transition(paletteTransition(anchor: .bottomTrailing))
             }
 
             if model.screen == .search, model.isOpenWithPresented {
                 OpenWithPalette(model: model)
                     .padding(.trailing, 8)
                     .padding(.bottom, 45)
-                    .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .bottomTrailing)))
+                    .transition(paletteTransition(anchor: .bottomTrailing))
             }
 
             if model.screen == .search, model.pendingRun != nil {
                 ConfirmRunPalette(model: model)
                     .padding(.trailing, 8)
                     .padding(.bottom, 45)
-                    .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .bottomTrailing)))
+                    .transition(paletteTransition(anchor: .bottomTrailing))
             }
 
             if model.screen == .search, model.pendingDeletion != nil {
                 ConfirmDeletePalette(model: model)
                     .padding(.trailing, 8)
                     .padding(.bottom, 45)
-                    .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .bottomTrailing)))
+                    .transition(paletteTransition(anchor: .bottomTrailing))
             }
 
             if model.screen == .search, model.isRunPalettePresented {
@@ -63,7 +71,7 @@ struct LauncherRootView: View {
                     .padding(.leading, 8)
                     .padding(.bottom, 45)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
-                    .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .bottomLeading)))
+                    .transition(paletteTransition(anchor: .bottomLeading))
             }
         }
         .frame(width: panelWidth, height: LauncherStyle.panelHeight)
@@ -72,11 +80,11 @@ struct LauncherRootView: View {
             RoundedRectangle(cornerRadius: LauncherStyle.panelCornerRadius, style: .continuous)
                 .stroke(Color.launcherSeparator.opacity(0.82), lineWidth: 1)
         }
-        .animation(.easeOut(duration: 0.12), value: model.isActionsPresented)
-        .animation(.easeOut(duration: 0.12), value: model.isOpenWithPresented)
-        .animation(.easeOut(duration: 0.12), value: model.isRunPalettePresented)
-        .animation(.easeOut(duration: 0.12), value: model.pendingRun)
-        .animation(.easeOut(duration: 0.12), value: model.pendingDeletion)
+        .animation(paletteAnimation, value: model.isActionsPresented)
+        .animation(paletteAnimation, value: model.isOpenWithPresented)
+        .animation(paletteAnimation, value: model.isRunPalettePresented)
+        .animation(paletteAnimation, value: model.pendingRun)
+        .animation(paletteAnimation, value: model.pendingDeletion)
         .animation(drawerAnimation, value: model.isOutputPanePresented)
     }
 }
@@ -157,6 +165,9 @@ private struct LauncherSearchView: View {
                 focusToken: model.focusToken,
                 isFocusTarget: model.focusTarget == .search,
                 placeholder: model.searchFieldPlaceholder,
+                accessibilityLabel: LauncherSearchField.contextualAccessibilityLabel(
+                    for: model.browseDirectoryForAccessibility
+                ),
                 onFocus: { model.noteFocus(.search) },
                 onCommand: handle
             )
@@ -207,6 +218,7 @@ private struct LauncherSearchView: View {
         let rowOffset = model.calculation == nil ? 0 : 1
         let rowCount = model.calculation == nil ? 6 : 4
         let showsResultsSection = model.calculation == nil || model.results.count > 1
+        let isLoadingResults = model.isLoading || model.isFileListingLoading
 
         return VStack(spacing: 0) {
             if let calculation = model.calculation {
@@ -224,7 +236,7 @@ private struct LauncherSearchView: View {
             }
 
             if showsResultsSection {
-                sectionHeader("Results", showsProgress: model.isLoading)
+                sectionHeader("Results", showsProgress: isLoadingResults)
 
                 ForEach(0..<rowCount, id: \.self) { index in
                     let resultIndex = index + rowOffset
@@ -238,7 +250,7 @@ private struct LauncherSearchView: View {
                                 model.activateSelected()
                             }
                         )
-                    } else if index == 0, rowOffset == 0, !model.isLoading {
+                    } else if index == 0, rowOffset == 0, !isLoadingResults {
                         HStack(spacing: 8) {
                             Image(systemName: "magnifyingglass")
                             Text("No matching applications or settings")
@@ -254,10 +266,16 @@ private struct LauncherSearchView: View {
             }
 
             HStack(spacing: 8) {
-                Image(systemName: model.isLoading ? "arrow.triangle.2.circlepath" : "sparkle.magnifyingglass")
+                Image(systemName: isLoadingResults ? "arrow.triangle.2.circlepath" : "sparkle.magnifyingglass")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Color.secondary.opacity(0.72))
-                Text(model.isLoading ? "Indexing installed applications…" : "Search apps, settings, and script commands, or type a calculation like 5+5")
+                Text(
+                    model.isFileListingLoading
+                        ? "Loading folder…"
+                        : model.isLoading
+                            ? "Indexing installed applications…"
+                            : "Search apps, settings, and script commands, or type a calculation like 5+5"
+                )
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(Color.secondary)
                     // The results region narrows to 526 pt with the pane open.
@@ -379,6 +397,8 @@ private struct LauncherSearchView: View {
             if model.availableActions.contains(.showInFinder) { model.perform(.showInFinder) }
         case .copyPath:
             if model.availableActions.contains(.copyPath) { model.perform(.copyPath) }
+        case .copyScriptContents:
+            if model.availableActions.contains(.copyScriptContents) { model.perform(.copyScriptContents) }
         }
     }
 
@@ -604,15 +624,15 @@ private struct ActionsPalette: View {
 
     private func displayTitle(for action: LauncherAction) -> String {
         guard action == .open else { return action.title }
-        switch model.selectedItem?.kind {
+        switch model.actionsTarget?.kind {
         case .application: return "Open Application"
         case .systemSetting: return "Open System Settings"
         case .launcherSetting:
-            return model.selectedItem?.destination == .createScript ? "Open Command" : "Open Launcher Settings"
+            return model.actionsTarget?.destination == .createScript ? "Open Command" : "Open Launcher Settings"
         case .calculator: return "Copy Answer"
         case .scriptCommand: return "Run Script"
         case .file: return "Open File"
-        case .directory: return model.selectedItem?.id == "file.icloud" ? "Open iCloud" : "Open Directory"
+        case .directory: return model.actionsTarget?.id == "file.icloud" ? "Open iCloud" : "Open Directory"
         case nil: return action.title
         }
     }

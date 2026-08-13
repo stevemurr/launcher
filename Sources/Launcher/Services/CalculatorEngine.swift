@@ -72,6 +72,26 @@ enum CalculatorEngine {
                     digits.append(digit)
                     index += 1
                 }
+                // NumberFormatter uses scientific notation for very large and
+                // very small answers (for example, "1e15"). Accept that same
+                // representation as input so copied calculator results round-trip.
+                // A bare `e` remains the Euler constant: "2e" still tokenizes as
+                // implicit multiplication because it has no exponent digits.
+                if index < characters.count, characters[index] == "e" || characters[index] == "E" {
+                    var exponentEnd = index + 1
+                    if exponentEnd < characters.count,
+                       characters[exponentEnd] == "+" || characters[exponentEnd] == "-" {
+                        exponentEnd += 1
+                    }
+                    let exponentDigitsStart = exponentEnd
+                    while exponentEnd < characters.count, characters[exponentEnd].isNumber {
+                        exponentEnd += 1
+                    }
+                    if exponentEnd > exponentDigitsStart {
+                        digits.append(contentsOf: characters[index..<exponentEnd])
+                        index = exponentEnd
+                    }
+                }
                 guard let value = Double(digits) else { return nil }
                 tokens.append(.number(value))
             } else if character.isLetter {
