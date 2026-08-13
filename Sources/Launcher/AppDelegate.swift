@@ -90,6 +90,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(isUITesting ? .regular : .accessory)
+        // Capture the login shell's environment now: scripts need it, and
+        // paying for a cold shell startup here costs nothing visible, whereas
+        // paying for it on the first script run would stall the panel.
+        ShellEnvironment.shared.prewarm()
         configureModelCallbacks()
         createPanel()
         if !isUITesting {

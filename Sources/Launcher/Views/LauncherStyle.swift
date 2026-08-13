@@ -19,4 +19,19 @@ enum LauncherStyle {
     static let footerHeight: CGFloat = 39
     static let paneHeaderHeight: CGFloat = 32
     static let panelCornerRadius: CGFloat = 16
+
+    // MARK: - Settings screen
+
+    /// Settings rows have to earn their height: the panel is fixed, so rows
+    /// that grow push the header and footer off both ends of it.
+    static let settingsRowHeight: CGFloat = 56
+    static let settingsShortcutRowHeight: CGFloat = 32
+    static let settingsContentPadding: CGFloat = 8
+
+    /// What the settings body gets once the header, the footer, and the
+    /// hairline above each have taken their share. `LauncherLayoutTests`
+    /// measures the real layout against this.
+    static var settingsContentHeight: CGFloat {
+        panelHeight - headerHeight - footerHeight - 2
+    }
 }

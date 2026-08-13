@@ -1,3 +1,4 @@
+import SwiftUI
 import XCTest
 @testable import Launcher
 
@@ -30,6 +31,43 @@ final class LauncherLayoutTests: XCTestCase {
             LauncherStyle.panelWidth - LauncherStyle.drawerResultsWidth,
             LauncherStyle.outputPaneWidth - growth
         )
+    }
+
+    // MARK: - Settings screen
+
+    /// Settings is the tallest screen the fixed panel has to hold, and nothing
+    /// warns you when it stops fitting: SwiftUI centers the overflow, so a
+    /// too-tall body clips the header off the top and the footer off the
+    /// bottom. Measure the real layout rather than trusting the arithmetic.
+    @MainActor
+    func testSettingsScreenFitsThePanelWithoutScrolling() {
+        let settings = LauncherSettings(defaults: UserDefaults(suiteName: "LauncherLayoutTests")!)
+        let model = LauncherModel(settings: settings, isUITesting: true)
+        let hosting = NSHostingView(rootView: LauncherSettingsView(model: model, settings: settings))
+        hosting.frame = NSRect(
+            x: 0,
+            y: 0,
+            width: LauncherStyle.panelWidth,
+            height: LauncherStyle.panelHeight
+        )
+        hosting.layoutSubtreeIfNeeded()
+
+        XCTAssertLessThanOrEqual(
+            hosting.fittingSize.height,
+            LauncherStyle.panelHeight,
+            "settings wants \(hosting.fittingSize.height)pt in a \(LauncherStyle.panelHeight)pt panel; "
+                + "trim a row or the panel will clip its own header and footer"
+        )
+    }
+
+    /// The body is what absorbs the remainder, so a row tall enough to fill the
+    /// panel on its own would leave nothing for the chrome.
+    func testSettingsBodyLeavesRoomForTheChrome() {
+        XCTAssertEqual(
+            LauncherStyle.settingsContentHeight,
+            LauncherStyle.panelHeight - LauncherStyle.headerHeight - LauncherStyle.footerHeight - 2
+        )
+        XCTAssertGreaterThan(LauncherStyle.settingsContentHeight, LauncherStyle.settingsRowHeight * 3)
     }
 
     // MARK: - Drawer frame math

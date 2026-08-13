@@ -618,7 +618,7 @@ private struct ActionsPalette: View {
     }
 }
 
-private struct LauncherSettingsView: View {
+struct LauncherSettingsView: View {
     @ObservedObject var model: LauncherModel
     @ObservedObject var settings: LauncherSettings
 
@@ -664,11 +664,15 @@ private struct LauncherSettingsView: View {
                 KeyCap("Esc")
             }
             .padding(.horizontal, 16)
-            .frame(height: 59)
+            .frame(height: LauncherStyle.headerHeight)
 
             Divider().opacity(0.65)
 
-            Group {
+            // The body scrolls so that content the fixed-height panel can't
+            // hold — an error label under the hotkey row, larger system text —
+            // takes space from itself rather than clipping the header and
+            // footer off both ends of the panel.
+            ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("GENERAL")
                         .font(.system(size: 12, weight: .semibold))
@@ -700,7 +704,7 @@ private struct LauncherSettingsView: View {
                                 .frame(width: 148, height: 34)
                         }
                         .padding(.horizontal, 14)
-                        .frame(height: 62)
+                        .frame(height: LauncherStyle.settingsRowHeight)
 
                         Divider().padding(.leading, 70)
 
@@ -734,7 +738,7 @@ private struct LauncherSettingsView: View {
                             .accessibilityIdentifier("settings.startAtLogin")
                         }
                         .padding(.horizontal, 14)
-                        .frame(height: 62)
+                        .frame(height: LauncherStyle.settingsRowHeight)
 
                         Divider().padding(.leading, 70)
 
@@ -782,7 +786,7 @@ private struct LauncherSettingsView: View {
                             .accessibilityIdentifier("settings.scriptsDir.change")
                         }
                         .padding(.horizontal, 14)
-                        .frame(height: 62)
+                        .frame(height: LauncherStyle.settingsRowHeight)
                     }
                     .background(Color.launcherControlSurface.opacity(0.62), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
                     .overlay {
@@ -829,9 +833,10 @@ private struct LauncherSettingsView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 22)
-                .padding(.vertical, 12)
+                .padding(.vertical, LauncherStyle.settingsContentPadding)
             }
-            .frame(maxHeight: .infinity, alignment: .top)
+            .scrollBounceBehavior(.basedOnSize)
+            .frame(maxHeight: .infinity)
 
             Divider().opacity(0.65)
 
@@ -848,7 +853,7 @@ private struct LauncherSettingsView: View {
                     .accessibilityIdentifier("settings.done")
             }
             .padding(.horizontal, 16)
-            .frame(height: 39)
+            .frame(height: LauncherStyle.footerHeight)
             .background(Color.launcherControlSurface.opacity(0.20))
         }
     }
@@ -868,7 +873,7 @@ private struct ShortcutReferenceRow: View {
             }
         }
         .padding(.horizontal, 14)
-        .frame(height: 36)
+        .frame(height: LauncherStyle.settingsShortcutRowHeight)
     }
 }
 

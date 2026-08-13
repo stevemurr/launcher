@@ -14,9 +14,11 @@
 		22ED689DD4A63D715867FA8D /* LauncherModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 959701A99FA58E1D01A1DE54 /* LauncherModel.swift */; };
 		24C3A77AA0CE567ED036B3AB /* ScriptTemplateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DDD9C9CA91E8C5CB6FC2B07 /* ScriptTemplateTests.swift */; };
 		2ECACD85B0177072B7F4FF3F /* LauncherView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78CA243E2DE30FA30AD048FA /* LauncherView.swift */; };
+		33AFC398F4A8F3447FF8B9BA /* ShellEnvironmentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D821BCE0F870685B79B45BB /* ShellEnvironmentTests.swift */; };
 		345416DE7971D249E1271175 /* LauncherModelActivationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FB3D185BDBC754C45F2C3F6 /* LauncherModelActivationTests.swift */; };
 		5564804FBFF5BA3D4B05D5B7 /* LoginItemManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6806BDFD401F2AFAD4D08BA8 /* LoginItemManager.swift */; };
 		59A1721A35E0C1EEE87855AD /* ScriptMetadataParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = E44077ACF2B963B94590B078 /* ScriptMetadataParser.swift */; };
+		60AF4B837F63C81F926E0207 /* ShellEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33777B688F8CE0A80790584C /* ShellEnvironment.swift */; };
 		681691F840D52E4C3A79EF75 /* LauncherLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D27CEDA49CE3104F1F77F73 /* LauncherLayoutTests.swift */; };
 		76F7B695F92592DF8586D322 /* ScriptTemplate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 360EE4294641E5CDD2AACB69 /* ScriptTemplate.swift */; };
 		779D9CC11716ADEF8468B29B /* CreateScriptView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75B0EA5492FD084DEF198FEC /* CreateScriptView.swift */; };
@@ -76,11 +78,13 @@
 		265DBA07B8910347D94016D1 /* VisualEffectView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisualEffectView.swift; sourceTree = "<group>"; };
 		2DDD8EC1F69637F4635296DB /* Launcher.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Launcher.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		2FA8646C1767994E168BA1B8 /* ScriptCommand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScriptCommand.swift; sourceTree = "<group>"; };
+		33777B688F8CE0A80790584C /* ShellEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShellEnvironment.swift; sourceTree = "<group>"; };
 		360EE4294641E5CDD2AACB69 /* ScriptTemplate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScriptTemplate.swift; sourceTree = "<group>"; };
 		456F09D2CE2629861AA3F501 /* FileBrowserEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileBrowserEngine.swift; sourceTree = "<group>"; };
 		4C12D999401E6A23F3CF880E /* ScriptCommandCatalogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScriptCommandCatalogTests.swift; sourceTree = "<group>"; };
 		55A099A844B590130F3650B9 /* LauncherSearchField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherSearchField.swift; sourceTree = "<group>"; };
 		5D41C41F97A80DE2EABF52CF /* ScriptMetadataParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScriptMetadataParserTests.swift; sourceTree = "<group>"; };
+		5D821BCE0F870685B79B45BB /* ShellEnvironmentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShellEnvironmentTests.swift; sourceTree = "<group>"; };
 		66D6E805E68A65282B70E574 /* LauncherApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherApp.swift; sourceTree = "<group>"; };
 		6806BDFD401F2AFAD4D08BA8 /* LoginItemManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginItemManager.swift; sourceTree = "<group>"; };
 		68DD0F140A6AA3E9FFE267AA /* FileBrowserViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileBrowserViews.swift; sourceTree = "<group>"; };
@@ -156,6 +160,7 @@
 				5D41C41F97A80DE2EABF52CF /* ScriptMetadataParserTests.swift */,
 				7DDD9C9CA91E8C5CB6FC2B07 /* ScriptTemplateTests.swift */,
 				EB1552D65C5E9701D5DBEDEA /* SearchMatcherTests.swift */,
+				5D821BCE0F870685B79B45BB /* ShellEnvironmentTests.swift */,
 			);
 			path = LauncherTests;
 			sourceTree = "<group>";
@@ -197,6 +202,7 @@
 				C37CD42E041B06B18157EA04 /* ScriptRunner.swift */,
 				360EE4294641E5CDD2AACB69 /* ScriptTemplate.swift */,
 				A3CD275177CC43FB2971B93F /* SearchMatcher.swift */,
+				33777B688F8CE0A80790584C /* ShellEnvironment.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -407,6 +413,7 @@
 				ADE5E8B46E9CB62068D855E9 /* ScriptRunner.swift in Sources */,
 				76F7B695F92592DF8586D322 /* ScriptTemplate.swift in Sources */,
 				C5523A53CF608771CE02846E /* SearchMatcher.swift in Sources */,
+				60AF4B837F63C81F926E0207 /* ShellEnvironment.swift in Sources */,
 				A8C8B95305F600C55D72FB68 /* VisualEffectView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -430,6 +437,7 @@
 				857EB1F9255DB649E0E7E94C /* ScriptMetadataParserTests.swift in Sources */,
 				24C3A77AA0CE567ED036B3AB /* ScriptTemplateTests.swift in Sources */,
 				B0E04C68AD4A1E6D81EDE12D /* SearchMatcherTests.swift in Sources */,
+				33AFC398F4A8F3447FF8B9BA /* ShellEnvironmentTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

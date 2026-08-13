@@ -94,6 +94,15 @@ final class ProcessScriptRunner: ScriptRunning {
     private static let flushInterval: DispatchTimeInterval = .milliseconds(80)
     private static let killGracePeriod: DispatchTimeInterval = .seconds(2)
 
+    /// Supplies the environment scripts run under. Defaults to the user's
+    /// login-shell environment so a script behaves the same here as it does in
+    /// Terminal, rather than inheriting launchd's bare PATH.
+    private let environmentProvider: () -> [String: String]
+
+    init(environmentProvider: @escaping () -> [String: String] = { ShellEnvironment.shared.resolved() }) {
+        self.environmentProvider = environmentProvider
+    }
+
     var isRunning: Bool {
         stateQueue.sync { isActive }
     }
@@ -107,6 +116,10 @@ final class ProcessScriptRunner: ScriptRunning {
     ) -> Bool {
         let process = Process()
         let pipe = Pipe()
+        // Resolved before taking stateQueue: the very first resolution may have
+        // to start a login shell, and stateQueue is what isRunning/cancel()
+        // synchronize on.
+        let environment = environmentProvider()
 
         let started: Bool = stateQueue.sync {
             guard !self.isActive else { return false }
@@ -120,6 +133,7 @@ final class ProcessScriptRunner: ScriptRunning {
                 process.arguments = [command.url.path] + arguments
             }
             process.currentDirectoryURL = command.url.deletingLastPathComponent()
+            process.environment = environment
             process.standardOutput = pipe
             process.standardError = pipe
             process.standardInput = FileHandle.nullDevice

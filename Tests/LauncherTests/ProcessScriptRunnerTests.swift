@@ -9,7 +9,10 @@ final class ProcessScriptRunnerTests: XCTestCase {
         directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("runner-tests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        runner = ProcessScriptRunner()
+        // Inject the test process's own environment so these cases stay
+        // hermetic and don't pay for a real login-shell capture. Environment
+        // inheritance itself is covered explicitly below.
+        runner = ProcessScriptRunner(environmentProvider: { ProcessInfo.processInfo.environment })
     }
 
     override func tearDownWithError() throws {
@@ -195,6 +198,32 @@ final class ProcessScriptRunnerTests: XCTestCase {
 
         XCTAssertEqual(run.result, .success)
         XCTAssertTrue(run.output.contains("alpha|beta gamma"))
+    }
+
+    func testScriptSeesTheProvidedEnvironment() throws {
+        // The whole point of resolving the login shell: a script must see the
+        // PATH and exports the user has in Terminal, not launchd's bare set.
+        runner = ProcessScriptRunner(environmentProvider: {
+            ["PATH": "/opt/homebrew/bin:/usr/bin:/bin", "MY_TOOL_HOME": "/Users/x/tools"]
+        })
+        let script = try writeScript("env.sh", body: "echo \"$PATH|$MY_TOOL_HOME\"")
+
+        let run = runToCompletion(script)
+
+        XCTAssertEqual(run.result, .success)
+        XCTAssertTrue(run.output.contains("/opt/homebrew/bin:/usr/bin:/bin|/Users/x/tools"), run.output)
+    }
+
+    func testEnvironmentIsResolvedForEveryRun() throws {
+        var resolutions = 0
+        runner = ProcessScriptRunner(environmentProvider: {
+            resolutions += 1
+            return ProcessInfo.processInfo.environment.merging(["RUN_INDEX": "\(resolutions)"]) { _, new in new }
+        })
+        let script = try writeScript("index.sh", body: "echo \"index=$RUN_INDEX\"")
+
+        XCTAssertTrue(runToCompletion(script).output.contains("index=1"))
+        XCTAssertTrue(runToCompletion(script).output.contains("index=2"))
     }
 
     func testMissingInterpreterReportsFailedToStart() throws {
