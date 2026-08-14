@@ -345,6 +345,28 @@ final class LauncherModelShellTests: XCTestCase {
         XCTAssertEqual(model.query, "")
     }
 
+    func testPendingStartupCommandDoesNotClearANewerDraft() throws {
+        let manager = StubPersistentShellSessionManager()
+        manager.automaticallyBecomesReady = false
+        let model = makeModel(shellSessionManager: manager)
+        enterShellMode(model, command: "printf first")
+        model.handleSubmit()
+        let id = try XCTUnwrap(manager.startedSessionIDs.first)
+
+        model.query = "printf second"
+        manager.ready(id, cwd: "/tmp/project")
+
+        XCTAssertEqual(manager.submittedCommands.map(\.1), ["printf first"])
+        XCTAssertEqual(model.query, "printf second")
+        XCTAssertEqual(model.shellRun?.sessionPhase, .foreground)
+
+        manager.finishForeground(id, cwd: "/tmp/project")
+        model.handleSubmit()
+
+        XCTAssertEqual(manager.submittedCommands.map(\.1), ["printf first", "printf second"])
+        XCTAssertEqual(model.query, "")
+    }
+
     func testStopClosesAStartingSessionAndLateReadyCannotResurrectIt() throws {
         let manager = StubPersistentShellSessionManager()
         manager.automaticallyBecomesReady = false
@@ -392,7 +414,8 @@ final class LauncherModelShellTests: XCTestCase {
         XCTAssertEqual(manager.sentInputLines.first?.0, id)
         XCTAssertEqual(model.query, "")
         XCTAssertEqual(model.searchFieldAccessibilityLabel, "Shell standard input")
-        XCTAssertTrue(model.searchFieldPlaceholder.contains("claude"))
+        XCTAssertEqual(model.searchFieldPlaceholder, "Send input to Shell 1…")
+        XCTAssertEqual(model.displayedRunTitle, "Shell 1")
     }
 
     func testForegroundCanBeInterruptedRepeatedlyAndReturnsToReadyWithUpdatedDirectory() throws {
@@ -495,6 +518,103 @@ final class LauncherModelShellTests: XCTestCase {
         manager.closeSession(firstID)
         XCTAssertEqual(model.runningShellResultCount, 1)
         XCTAssertEqual(model.results.first?.kind, .runningShell)
+    }
+
+    func testRunningShellMetadataAndAccessibilityNeverExposeRawCommand() throws {
+        let manager = StubPersistentShellSessionManager()
+        let model = makeModel(shellSessionManager: manager)
+        let secretCommand = "export OPENAI_API_KEY=supersecret"
+        enterShellMode(model, command: secretCommand)
+        model.handleSubmit()
+        let id = try XCTUnwrap(manager.startedSessionIDs.first)
+        manager.finishForeground(id, cwd: "/tmp/private-project")
+
+        model.handleEscape()
+
+        let item = try XCTUnwrap(model.results.first)
+        XCTAssertEqual(item.title, "Shell 1")
+        XCTAssertEqual(item.subtitle, "Ready in /tmp/private-project")
+        XCTAssertFalse(item.title.contains(secretCommand))
+        XCTAssertFalse(item.keywords.contains(secretCommand))
+        XCTAssertEqual(
+            LauncherResultPresentation.accessibilityIdentifier(for: item),
+            "result.Shell 1"
+        )
+        XCTAssertEqual(
+            LauncherResultPresentation.accessibilityLabel(for: item),
+            "Shell 1, Ready in /tmp/private-project, Running Shell"
+        )
+        XCTAssertFalse(
+            LauncherResultPresentation.accessibilityLabel(for: item).contains("supersecret")
+        )
+
+        model.query = "supersecret"
+        let filteredItem = try XCTUnwrap(model.results.first)
+        XCTAssertEqual(filteredItem.title, "Shell 1")
+        XCTAssertFalse(filteredItem.keywords.contains("supersecret"))
+
+        model.select(index: 0)
+        model.handleSubmit()
+        XCTAssertEqual(model.shellSessionDisplayName, "Shell 1")
+        XCTAssertTrue(model.shellRun?.output.contains(secretCommand) == true)
+    }
+
+    func testCloseShellActionAndSelectedButtonCloseOnlyTheRequestedReadySession() throws {
+        let manager = StubPersistentShellSessionManager()
+        manager.automaticallyClosesOnRequest = false
+        let model = makeModel(shellSessionManager: manager)
+
+        enterShellMode(model, command: "first command")
+        model.handleSubmit()
+        let firstID = try XCTUnwrap(manager.startedSessionIDs.first)
+        manager.finishForeground(firstID, cwd: "/tmp/first")
+        model.handleEscape()
+
+        enterShellMode(model, command: "second command")
+        model.handleSubmit()
+        let secondID = try XCTUnwrap(manager.startedSessionIDs.last)
+        manager.finishForeground(secondID, cwd: "/tmp/second")
+        model.handleEscape()
+
+        let firstSessionID = ShellSessionID(rawValue: firstID.rawValue)
+        let firstIndex = try XCTUnwrap(
+            model.results.firstIndex { $0.destination == .shellSession(firstSessionID) }
+        )
+        model.select(index: firstIndex)
+        XCTAssertEqual(model.availableActions, [.open, .closeShell])
+        model.toggleActions()
+        XCTAssertEqual(model.actionsTarget?.destination, .shellSession(firstID))
+        model.perform(.closeShell)
+
+        XCTAssertEqual(manager.closedSessionIDs, [firstID])
+        XCTAssertEqual(
+            model.shellSessions.first(where: { $0.id == firstID })?.sessionPhase,
+            .closing
+        )
+        XCTAssertTrue(model.shellSessions.contains { $0.id == secondID })
+        XCTAssertFalse(model.results.contains { $0.destination == .shellSession(firstID) })
+        XCTAssertTrue(model.results.contains { $0.destination == .shellSession(secondID) })
+
+        manager.finishClose(firstID)
+        XCTAssertFalse(model.shellSessions.contains { $0.id == firstID })
+
+        let secondSessionID = ShellSessionID(rawValue: secondID.rawValue)
+        let secondIndex = try XCTUnwrap(
+            model.results.firstIndex { $0.destination == .shellSession(secondSessionID) }
+        )
+        model.select(index: secondIndex)
+        model.handleSubmit()
+        XCTAssertTrue(model.canCloseShellSession)
+        XCTAssertEqual(model.shellSessionDisplayName, "Shell 2")
+
+        model.closeSelectedShellSession()
+
+        XCTAssertEqual(manager.closedSessionIDs, [firstID, secondID])
+        XCTAssertFalse(model.isShellMode)
+        XCTAssertFalse(model.shellSessions.contains { $0.id == secondID })
+        XCTAssertEqual(model.runningShellResultCount, 0)
+        manager.finishClose(secondID)
+        XCTAssertEqual(model.runningShellResultCount, 0)
     }
 
     func testLiteralLeadingGreaterThanRoutesRawCommandToTheShell() {
@@ -709,7 +829,8 @@ final class LauncherModelShellTests: XCTestCase {
         guard case .shellSession = runningShell.destination else {
             return XCTFail("running shell result must resume a session, got \(runningShell.destination)")
         }
-        XCTAssertTrue(runningShell.title.contains("sleep 30"), runningShell.title)
+        XCTAssertEqual(runningShell.title, "Shell 1")
+        XCTAssertFalse(runningShell.keywords.contains("sleep 30"), runningShell.keywords)
         XCTAssertEqual(model.runningShellResultCount, 1)
         XCTAssertEqual(
             model.results.dropFirst().first?.title,
@@ -810,19 +931,31 @@ final class LauncherModelShellTests: XCTestCase {
             "each row must resume its own process"
         )
 
-        let firstIndex = try XCTUnwrap(model.results.firstIndex { $0.title.contains("first-long-command") })
+        XCTAssertEqual(model.results.prefix(2).map(\.title), ["Shell 2", "Shell 1"])
+        XCTAssertFalse(model.results.prefix(2).contains { $0.title.contains("command") })
+        XCTAssertFalse(model.results.prefix(2).contains { $0.keywords.contains("long-command") })
+
+        let firstSessionID = ShellSessionID(rawValue: firstID.rawValue)
+        let firstIndex = try XCTUnwrap(
+            model.results.firstIndex { $0.destination == .shellSession(firstSessionID) }
+        )
         model.select(index: firstIndex)
         model.handleSubmit()
         XCTAssertTrue(model.isShellMode)
+        XCTAssertEqual(model.shellSessionDisplayName, "Shell 1")
         XCTAssertEqual(model.shellRun?.command, "first-long-command")
         XCTAssertTrue(model.shellRun?.output.contains("first-output") == true)
         XCTAssertFalse(model.shellRun?.output.contains("second-output") == true)
         XCTAssertEqual(manager.commands.count, 2, "resume must not launch another command")
 
         model.handleEscape()
-        let secondIndex = try XCTUnwrap(model.results.firstIndex { $0.title.contains("second-long-command") })
+        let secondSessionID = ShellSessionID(rawValue: secondID.rawValue)
+        let secondIndex = try XCTUnwrap(
+            model.results.firstIndex { $0.destination == .shellSession(secondSessionID) }
+        )
         model.select(index: secondIndex)
         model.handleSubmit()
+        XCTAssertEqual(model.shellSessionDisplayName, "Shell 2")
         XCTAssertEqual(model.shellRun?.command, "second-long-command")
         XCTAssertTrue(model.shellRun?.output.contains("second-output") == true)
         XCTAssertFalse(model.shellRun?.output.contains("first-output") == true)
