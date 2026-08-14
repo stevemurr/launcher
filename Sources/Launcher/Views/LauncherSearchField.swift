@@ -41,6 +41,7 @@ struct LauncherSearchField: NSViewRepresentable {
     @Binding var text: String
     let focusToken: Int
     var isFocusTarget = true
+    var isSecureEntry = false
     var placeholder = "Search applications and settings"
     var accessibilityLabel = "Search applications and settings"
     var onFocus: (() -> Void)?
@@ -72,10 +73,12 @@ struct LauncherSearchField: NSViewRepresentable {
         field.identifier = NSUserInterfaceItemIdentifier("launcher.search")
         field.setAccessibilityIdentifier("launcher.search")
         field.setAccessibilityLabel(accessibilityLabel)
+        field.setSecureEntry(isSecureEntry)
         return field
     }
 
     func updateNSView(_ field: KeyHandlingTextField, context: Context) {
+        field.setSecureEntry(isSecureEntry)
         field.replaceTextIfNeeded(text)
         if field.placeholderString != placeholder { field.placeholderString = placeholder }
         field.setAccessibilityLabel(accessibilityLabel)
@@ -124,13 +127,24 @@ struct LauncherSearchField: NSViewRepresentable {
     }
 }
 
-final class KeyHandlingTextField: NSTextField {
+final class KeyHandlingTextField: NSSecureTextField {
     var onCommand: ((LauncherKeyCommand) -> Void)?
     var onFocus: (() -> Void)?
+    private var suppressFocusCallback = false
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setSecureEntry(false)
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setSecureEntry(false)
+    }
 
     override func becomeFirstResponder() -> Bool {
         let became = super.becomeFirstResponder()
-        if became { onFocus?() }
+        if became, !suppressFocusCallback { onFocus?() }
         return became
     }
 
@@ -155,6 +169,48 @@ final class KeyHandlingTextField: NSTextField {
         guard let editor, editor.string != text else { return }
         editor.string = text
         editor.setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
+    }
+
+    /// Changes how AppKit presents this field without replacing the control.
+    /// AppKit supplies a secure field editor when needed; text, selection, and
+    /// keyboard focus are transferred to it without notifying the focus owner.
+    func setSecureEntry(_ isSecureEntry: Bool) {
+        guard isSecureEntry != (cell is NSSecureTextFieldCell) else { return }
+        guard let previousCell = cell as? NSTextFieldCell else { return }
+
+        let editor = currentEditor() as? NSTextView
+        let liveText = editor?.string ?? stringValue
+        let selection = (editor?.selectedRange()
+            ?? NSRange(location: (liveText as NSString).length, length: 0))
+            .clamped(toUTF16Length: (liveText as NSString).length)
+        let editingWindow = window
+        let wasEditorFirstResponder = editor.map { editingWindow?.firstResponder === $0 } ?? false
+
+        // A secure cell requires AppKit's secure field-editor subclass. End
+        // the current editing session before the swap so AppKit can vend the
+        // correct editor type when focus is restored. The control itself is
+        // never replaced, and the live text/selection are restored below.
+        if wasEditorFirstResponder {
+            if editingWindow?.makeFirstResponder(nil) != true {
+                _ = abortEditing()
+            }
+        }
+
+        let replacementCell: NSTextFieldCell = isSecureEntry
+            ? NSSecureTextFieldCell(textCell: liveText)
+            : NSTextFieldCell(textCell: liveText)
+        replacementCell.copyPresentation(from: previousCell)
+        replacementCell.stringValue = liveText
+        cell = replacementCell
+        stringValue = liveText
+
+        guard wasEditorFirstResponder, let editingWindow else { return }
+        suppressFocusCallback = true
+        let restoredFocus = editingWindow.makeFirstResponder(self)
+        suppressFocusCallback = false
+        guard restoredFocus, let replacementEditor = currentEditor() as? NSTextView else { return }
+        replacementEditor.string = liveText
+        replacementEditor.setSelectedRange(selection)
     }
 
     private func handle(_ event: NSEvent) -> Bool {
@@ -202,5 +258,45 @@ final class KeyHandlingTextField: NSTextField {
         guard !event.isARepeat || command.acceptsKeyRepeat else { return true }
         onCommand?(command)
         return true
+    }
+}
+
+private extension NSTextFieldCell {
+    func copyPresentation(from source: NSTextFieldCell) {
+        isEnabled = source.isEnabled
+        isContinuous = source.isContinuous
+        isEditable = source.isEditable
+        isSelectable = source.isSelectable
+        isBordered = source.isBordered
+        isBezeled = source.isBezeled
+        isScrollable = source.isScrollable
+        alignment = source.alignment
+        wraps = source.wraps
+        font = source.font
+        controlSize = source.controlSize
+        sendsActionOnEndEditing = source.sendsActionOnEndEditing
+        baseWritingDirection = source.baseWritingDirection
+        lineBreakMode = source.lineBreakMode
+        allowsUndo = source.allowsUndo
+        truncatesLastVisibleLine = source.truncatesLastVisibleLine
+        userInterfaceLayoutDirection = source.userInterfaceLayoutDirection
+        usesSingleLineMode = source.usesSingleLineMode
+        refusesFirstResponder = source.refusesFirstResponder
+        focusRingType = source.focusRingType
+        backgroundColor = source.backgroundColor
+        drawsBackground = source.drawsBackground
+        textColor = source.textColor
+        bezelStyle = source.bezelStyle
+        placeholderString = source.placeholderString
+        if let placeholderAttributedString = source.placeholderAttributedString {
+            self.placeholderAttributedString = placeholderAttributedString
+        }
+    }
+}
+
+private extension NSRange {
+    func clamped(toUTF16Length length: Int) -> NSRange {
+        let location = min(location, length)
+        return NSRange(location: location, length: min(self.length, length - location))
     }
 }

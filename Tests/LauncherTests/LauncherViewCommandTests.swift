@@ -3,6 +3,12 @@ import XCTest
 @testable import Launcher
 
 final class LauncherViewCommandTests: XCTestCase {
+    // macOS 27 beta's text-input analytics can dereference a deallocated
+    // NSSecureTextField editor during XCTest's post-test memory check. This is
+    // reproducible with a vanilla NSSecureTextField, so retain the objects used
+    // by the live-editor regression test for the lifetime of the test process.
+    private static var retainedSecureEditorTestObjects: [AnyObject] = []
+
     func testFieldEditorArrowCommandsRouteToLauncherSelection() {
         XCTAssertEqual(
             LauncherKeyCommand(textCommandSelector: #selector(NSResponder.moveUp(_:))),
@@ -133,6 +139,141 @@ final class LauncherViewCommandTests: XCTestCase {
         XCTAssertEqual(field.stringValue, "git checkout ")
         XCTAssertEqual(editor.string, "git checkout ")
         XCTAssertEqual(editor.selectedRange(), NSRange(location: 13, length: 0))
+    }
+
+    func testSecureEntryRedactsAccessibilityValueAndTogglingBackRestoresPlaintext() throws {
+        let secret = "super-secret-value"
+        let field = KeyHandlingTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 32))
+        field.stringValue = secret
+
+        XCTAssertFalse(field.cell is NSSecureTextFieldCell)
+        XCTAssertEqual(try XCTUnwrap(field.accessibilityValue()), secret)
+
+        field.setSecureEntry(true)
+
+        XCTAssertTrue(field.cell is NSSecureTextFieldCell)
+        let redactedValue = try XCTUnwrap(field.accessibilityValue())
+        XCTAssertFalse(redactedValue.contains(secret))
+        XCTAssertEqual(redactedValue.count, secret.count)
+        XCTAssertEqual(
+            Set(redactedValue).count,
+            1,
+            "AppKit should expose one repeated redaction glyph rather than any secret characters"
+        )
+
+        field.setSecureEntry(false)
+
+        XCTAssertFalse(field.cell is NSSecureTextFieldCell)
+        XCTAssertEqual(field.stringValue, secret)
+        XCTAssertEqual(try XCTUnwrap(field.accessibilityValue()), secret)
+    }
+
+    func testSecureEntryTogglePreservesControlIdentityCaretFocusPresentationAndCommands() throws {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 320, height: 80),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        let field = KeyHandlingTextField(frame: NSRect(x: 10, y: 10, width: 300, height: 32))
+        let expectedFont = NSFont.monospacedSystemFont(ofSize: 18, weight: .semibold)
+        let expectedColor = NSColor.systemPurple
+        field.font = expectedFont
+        field.textColor = expectedColor
+        field.placeholderString = "Terminal input"
+        field.isBordered = false
+        field.isBezeled = false
+        field.drawsBackground = false
+        field.focusRingType = .none
+        field.lineBreakMode = .byTruncatingMiddle
+        field.stringValue = "draft password"
+
+        var focusCount = 0
+        field.onFocus = { focusCount += 1 }
+        var receivedCommand: LauncherKeyCommand?
+        field.onCommand = { receivedCommand = $0 }
+
+        window.contentView?.addSubview(field)
+        XCTAssertTrue(window.makeFirstResponder(field))
+        let editor = try XCTUnwrap(field.currentEditor() as? NSTextView)
+        let initialCell = try XCTUnwrap(field.cell)
+        editor.string = "draft password"
+        editor.setSelectedRange(NSRange(location: 3, length: 5))
+
+        let fieldIdentity = ObjectIdentifier(field)
+        let focusCountBeforeToggling = focusCount
+        let interrupt = try XCTUnwrap(
+            NSEvent.keyEvent(
+                with: .keyDown,
+                location: .zero,
+                modifierFlags: [.control],
+                timestamp: 0,
+                windowNumber: 0,
+                context: nil,
+                characters: "c",
+                charactersIgnoringModifiers: "c",
+                isARepeat: false,
+                keyCode: 8
+            )
+        )
+
+        field.setSecureEntry(true)
+
+        let secureEditor = try XCTUnwrap(field.currentEditor() as? NSTextView)
+        let secureCell = try XCTUnwrap(field.cell)
+        XCTAssertEqual(ObjectIdentifier(field), fieldIdentity)
+        XCTAssertTrue(window.firstResponder === secureEditor)
+        XCTAssertEqual(field.stringValue, "draft password")
+        XCTAssertEqual(secureEditor.string, "draft password")
+        XCTAssertEqual(secureEditor.selectedRange(), NSRange(location: 3, length: 5))
+        let secureEditorAXValue: Any? = secureEditor.accessibilityValue()
+        let secureEditorAXText = try XCTUnwrap(accessibilityText(from: secureEditorAXValue))
+        XCTAssertFalse(secureEditorAXText.contains("draft password"))
+        XCTAssertFalse(secureEditorAXText.isEmpty)
+        XCTAssertEqual(field.font, expectedFont)
+        XCTAssertEqual(field.textColor, expectedColor)
+        XCTAssertEqual(field.placeholderString, "Terminal input")
+        XCTAssertFalse(field.isBordered)
+        XCTAssertFalse(field.isBezeled)
+        XCTAssertFalse(field.drawsBackground)
+        XCTAssertEqual(field.focusRingType, .none)
+        XCTAssertEqual(field.lineBreakMode, .byTruncatingMiddle)
+        XCTAssertEqual(focusCount, focusCountBeforeToggling)
+        XCTAssertTrue(field.performKeyEquivalent(with: interrupt))
+        XCTAssertEqual(receivedCommand, .interruptRun)
+        receivedCommand = nil
+
+        field.setSecureEntry(false)
+
+        let plaintextEditor = try XCTUnwrap(field.currentEditor() as? NSTextView)
+        XCTAssertEqual(ObjectIdentifier(field), fieldIdentity)
+        XCTAssertTrue(window.firstResponder === plaintextEditor)
+        XCTAssertEqual(field.stringValue, "draft password")
+        XCTAssertEqual(plaintextEditor.string, "draft password")
+        XCTAssertEqual(plaintextEditor.selectedRange(), NSRange(location: 3, length: 5))
+        let plaintextEditorAXValue: Any? = plaintextEditor.accessibilityValue()
+        XCTAssertEqual(accessibilityText(from: plaintextEditorAXValue), "draft password")
+        XCTAssertEqual(field.font, expectedFont)
+        XCTAssertEqual(field.textColor, expectedColor)
+        XCTAssertEqual(focusCount, focusCountBeforeToggling)
+
+        XCTAssertTrue(field.performKeyEquivalent(with: interrupt))
+        XCTAssertEqual(receivedCommand, .interruptRun)
+        XCTAssertTrue(window.makeFirstResponder(nil))
+        Self.retainedSecureEditorTestObjects = [
+            window,
+            field,
+            initialCell,
+            editor,
+            secureCell,
+            secureEditor,
+            plaintextEditor,
+        ]
+    }
+
+    private func accessibilityText(from value: Any?) -> String? {
+        if let value = value as? String { return value }
+        return (value as? NSAttributedString)?.string
     }
 
     func testShellTabRequestsThenCyclesCompletionCandidates() {
