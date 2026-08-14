@@ -332,6 +332,8 @@ final class LauncherModel: ObservableObject {
     @Published private(set) var selectedShellSessionID: ShellSessionID?
     @Published private(set) var shellCompletions: [String] = []
     @Published private(set) var shellCompletionSelectionIndex = 0
+    @Published private(set) var shellCompletionCaretUTF16: Int?
+    @Published private(set) var shellCompletionCaretRequestToken = 0
     @Published private(set) var panelPresentation: LauncherPanelPresentation = .compact
     @Published var isRunPalettePresented = false
     @Published private(set) var pendingRun: PendingScriptRun?
@@ -1683,7 +1685,7 @@ final class LauncherModel: ObservableObject {
         run.didTruncateOutput = true
     }
 
-    func requestShellCompletion(backward: Bool = false) {
+    func requestShellCompletion(backward: Bool = false, cursorUTF16: Int? = nil) {
         guard isShellMode, shellInputMode == .idle else {
             dismissShellCompletion()
             return
@@ -1695,9 +1697,11 @@ final class LauncherModel: ObservableObject {
 
         dismissShellCompletion()
         let requestID = ShellCompletionRequestID()
+        let inputLength = (query as NSString).length
+        let cursor = max(0, min(cursorUTF16 ?? inputLength, inputLength))
         let request = PendingShellCompletionRequest(
             input: query,
-            cursorUTF16: (query as NSString).length,
+            cursorUTF16: cursor,
             requestID: requestID,
             selectsLastCandidate: backward
         )
@@ -1782,6 +1786,7 @@ final class LauncherModel: ObservableObject {
             dismissShellCompletion()
             return
         }
+        let completedCaret = replacementRange.lowerBound + (candidate as NSString).length
         query = source.replacingCharacters(
             in: NSRange(
                 location: replacementRange.lowerBound,
@@ -1789,6 +1794,8 @@ final class LauncherModel: ObservableObject {
             ),
             with: candidate
         )
+        shellCompletionCaretUTF16 = completedCaret
+        shellCompletionCaretRequestToken &+= 1
         dismissShellCompletion()
     }
 

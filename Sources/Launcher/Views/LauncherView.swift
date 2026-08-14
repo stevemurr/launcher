@@ -194,6 +194,8 @@ private struct LauncherSearchView: View {
                 isFocusTarget: model.focusTarget == .search,
                 placeholder: model.searchFieldPlaceholder,
                 accessibilityLabel: model.searchFieldAccessibilityLabel,
+                requestedCaretUTF16: model.shellCompletionCaretUTF16,
+                caretRequestToken: model.shellCompletionCaretRequestToken,
                 onFocus: { model.noteFocus(.search) },
                 onCommand: handle
             )
@@ -520,7 +522,8 @@ private struct LauncherSearchView: View {
             hasCandidates: !model.shellCompletions.isEmpty
         ) {
             switch completionAction {
-            case let .request(backward): model.requestShellCompletion(backward: backward)
+            case let .request(backward, cursorUTF16):
+                model.requestShellCompletion(backward: backward, cursorUTF16: cursorUTF16)
             case let .move(offset): model.moveShellCompletion(by: offset)
             case .accept: model.acceptShellCompletion()
             }
@@ -536,6 +539,8 @@ private struct LauncherSearchView: View {
         case .settings: model.showSettings()
         case .focusNext: model.handleFocusNext()
         case .focusPrevious: model.handleFocusPrevious()
+        case let .completeShell(backward, _):
+            if backward { model.handleFocusPrevious() } else { model.handleFocusNext() }
         case .toggleRunPalette: model.toggleRunPalette()
         case .toggleOutputPane: model.toggleOutputPane()
         case .editScript: model.beginEditingSelectedScript()
@@ -585,7 +590,7 @@ enum ShellInputPresentation {
 }
 
 enum ShellCompletionKeyboardAction: Equatable {
-    case request(backward: Bool)
+    case request(backward: Bool, cursorUTF16: Int?)
     case move(offset: Int)
     case accept
 
@@ -596,10 +601,14 @@ enum ShellCompletionKeyboardAction: Equatable {
     ) -> ShellCompletionKeyboardAction? {
         guard isShellMode else { return nil }
         switch command {
+        case let .completeShell(backward, cursorUTF16):
+            return hasCandidates
+                ? .move(offset: backward ? -1 : 1)
+                : .request(backward: backward, cursorUTF16: cursorUTF16)
         case .focusNext:
-            return hasCandidates ? .move(offset: 1) : .request(backward: false)
+            return hasCandidates ? .move(offset: 1) : .request(backward: false, cursorUTF16: nil)
         case .focusPrevious:
-            return hasCandidates ? .move(offset: -1) : .request(backward: true)
+            return hasCandidates ? .move(offset: -1) : .request(backward: true, cursorUTF16: nil)
         case .moveDown where hasCandidates:
             return .move(offset: 1)
         case .moveUp where hasCandidates:

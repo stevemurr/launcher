@@ -328,6 +328,85 @@ final class ProcessPersistentShellSessionManagerTests: XCTestCase {
         wait(for: [fileCompletion, pathCompletion, maliciousCompletion, tildeCompletion, relativePATHCompletion, pipeCompletion, directoryCompletion], timeout: 5)
     }
 
+    func testCompletionTracksHOMEAndUnderstandsShellCommandContexts() throws {
+        let initialHome = try makeTemporaryDirectory(named: "initial-home")
+        let changedHome = initialHome.deletingLastPathComponent().appendingPathComponent("changed-home")
+        try FileManager.default.createDirectory(at: changedHome, withIntermediateDirectories: true)
+        let changedFile = changedHome.appendingPathComponent("changed target.txt")
+        XCTAssertTrue(FileManager.default.createFile(atPath: changedFile.path, contents: Data()))
+
+        var environment = ProcessInfo.processInfo.environment
+        environment["HOME"] = initialHome.path
+        environment["PATH"] = "/usr/bin:/bin"
+        let manager = makeManager(environment: environment, workingDirectory: initialHome)
+        let id = ShellSessionID()
+        let ready = expectation(description: "ready")
+        let contextChanged = expectation(description: "completion context changed")
+
+        XCTAssertTrue(manager.startSession(id: id, onOutput: { _, _ in }, onEvent: { _, event in
+            switch event {
+            case .ready: ready.fulfill()
+            case .foregroundFinished: contextChanged.fulfill()
+            default: break
+            }
+        }))
+        wait(for: [ready], timeout: 5)
+        XCTAssertTrue(manager.submitCommand("export HOME=\(quote(changedHome.path))", to: id))
+        wait(for: [contextChanged], timeout: 5)
+
+        let checks: [(String, String, String)] = [
+            ("builtin", "seto", "setopt"),
+            ("assignment", "FOO=bar pri", "printf"),
+            ("attached redirection", "echo ok >~/cha", "~/changed\\ target.txt"),
+            ("spaced redirection", "echo ok > ~/cha", "~/changed\\ target.txt"),
+            ("descriptor redirection", "echo ok 2>~/cha", "~/changed\\ target.txt"),
+            ("append redirection", "echo ok 2>>~/cha", "~/changed\\ target.txt"),
+            ("combined redirection", "echo ok &>~/cha", "~/changed\\ target.txt"),
+            ("leading redirection", "> /tmp/out pri", "printf"),
+            ("operator", "echo ok || pri", "printf"),
+            ("attached operator", "echo ok;pri", "printf"),
+        ]
+        let completions = expectation(description: "all completion contexts")
+        completions.expectedFulfillmentCount = checks.count + 1
+
+        for (label, input, expected) in checks {
+            let cursor = input.utf16.count
+            manager.requestCompletions(
+                input: input,
+                cursorUTF16: cursor,
+                in: id,
+                requestID: ShellCompletionRequestID()
+            ) { _, result in
+                XCTAssertTrue(
+                    result.candidates.contains(expected),
+                    "\(label): expected \(expected) in \(result.candidates)"
+                )
+                if let tokenRange = input.range(of: input.hasSuffix("pri") ? "pri" : "~/cha", options: .backwards) {
+                    XCTAssertEqual(
+                        result.replacementRange.lowerBound,
+                        input.utf16.distance(from: input.utf16.startIndex, to: tokenRange.lowerBound.samePosition(in: input.utf16)!)
+                    )
+                }
+                completions.fulfill()
+            }
+        }
+
+        let midInput = "echo 😀 /usr/bin/pri suffix"
+        let midStart = ("echo 😀 " as NSString).length
+        let midCursor = ("echo 😀 /usr/bin/pri" as NSString).length
+        manager.requestCompletions(
+            input: midInput,
+            cursorUTF16: midCursor,
+            in: id,
+            requestID: ShellCompletionRequestID()
+        ) { _, result in
+            XCTAssertEqual(result.replacementRange, midStart..<midCursor)
+            XCTAssertTrue(result.candidates.contains("/usr/bin/printf"), "\(result.candidates)")
+            completions.fulfill()
+        }
+        wait(for: [completions], timeout: 5)
+    }
+
     func testTwoSessionsAreIndependentAndCloseAndTerminate() throws {
         let firstDirectory = try makeTemporaryDirectory(named: "first")
         let secondDirectory = try makeTemporaryDirectory(named: "second")

@@ -418,25 +418,37 @@ final class LauncherModelShellTests: XCTestCase {
         XCTAssertEqual(manager.startedSessionIDs, [id], "the shell session survives foreground interruption")
     }
 
-    func testTabLazilyStartsSessionAndAppliesCompletionRange() throws {
+    func testTabUsesUTF16CaretAndPreservesEmojiAndSuffixWhenCompletionIsAccepted() throws {
         let manager = StubPersistentShellSessionManager()
         let model = makeModel(shellSessionManager: manager)
-        enterShellMode(model, command: "git che --flag")
+        let input = "echo 😀 /usr/bin/pri --flag"
+        let tokenStart = ("echo 😀 " as NSString).length
+        let cursor = ("echo 😀 /usr/bin/pri" as NSString).length
+        enterShellMode(model, command: input)
 
-        model.requestShellCompletion()
+        model.requestShellCompletion(cursorUTF16: cursor)
 
         let id = try XCTUnwrap(manager.startedSessionIDs.first)
         XCTAssertEqual(manager.completionRequests.count, 1)
-        XCTAssertEqual(manager.completionRequests[0].input, "git che --flag")
-        XCTAssertEqual(manager.completionRequests[0].cursorUTF16, 14)
-        manager.deliverCompletion(at: 0, replacementRange: 4..<7, candidates: ["checkout", "cherry-pick"])
-        XCTAssertEqual(model.shellCompletions, ["checkout", "cherry-pick"])
+        XCTAssertEqual(manager.completionRequests[0].input, input)
+        XCTAssertEqual(manager.completionRequests[0].cursorUTF16, cursor)
+        manager.deliverCompletion(
+            at: 0,
+            replacementRange: tokenStart..<cursor,
+            candidates: ["/usr/bin/printenv", "/usr/bin/printf"]
+        )
+        XCTAssertEqual(model.shellCompletions, ["/usr/bin/printenv", "/usr/bin/printf"])
         XCTAssertEqual(model.shellCompletionSelectionIndex, 0)
 
         model.moveShellCompletion(by: 1)
         model.acceptShellCompletion()
 
-        XCTAssertEqual(model.query, "git cherry-pick --flag")
+        XCTAssertEqual(model.query, "echo 😀 /usr/bin/printf --flag")
+        XCTAssertEqual(
+            model.shellCompletionCaretUTF16,
+            tokenStart + ("/usr/bin/printf" as NSString).length
+        )
+        XCTAssertEqual(model.shellCompletionCaretRequestToken, 1)
         XCTAssertTrue(model.shellCompletions.isEmpty)
         XCTAssertEqual(manager.startedSessionIDs, [id])
         XCTAssertTrue(manager.submittedCommands.isEmpty, "accepting completion must not execute it")

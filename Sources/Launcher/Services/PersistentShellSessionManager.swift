@@ -137,7 +137,8 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
         var phase: Phase = .starting
         var cwd: String
         var path: String
-        let home: String
+        var home: String
+        var shellCommandNames: Set<String> = []
         var controlBuffer = Data()
         var sanitizer = TerminalOutputSanitizer()
         var decoder = UTF8Decoder()
@@ -199,6 +200,23 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
     private var sessions: [ShellSessionID: Session] = [:]
     private static let outputFlushInterval: DispatchTimeInterval = .milliseconds(50)
     private static let maximumPendingOutputCharacters = 100_000
+    /// Baseline zsh builtins available without searching PATH. Keeping this
+    /// local avoids evaluating user-controlled shell configuration merely to
+    /// offer completion candidates.
+    private static let zshBuiltinCommandNames: Set<String> = [
+        "-", ".", ":", "[", "alias", "autoload", "bg", "bindkey", "break", "builtin", "bye",
+        "cd", "chdir", "command", "compadd", "comparguments", "compcall", "compctl",
+        "compdescribe", "compfiles", "compgroups", "compquote", "compset", "comptags", "comptry",
+        "compvalues", "continue", "declare", "dirs", "disable", "disown", "echo", "echotc",
+        "echoti", "emulate", "enable", "eval", "exec", "exit", "export", "false", "fc", "fg",
+        "float", "functions", "getln", "getopts", "hash", "history", "integer", "jobs", "kill",
+        "let", "limit", "local", "log", "logout", "noglob", "popd", "print", "printf", "private",
+        "pushd", "pushln", "pwd", "r", "read", "readonly", "rehash", "return", "sched", "set",
+        "setopt", "shift", "source", "suspend", "test", "times", "trap", "true", "ttyctl", "type",
+        "typeset", "ulimit", "umask", "unalias", "unfunction", "unhash", "unlimit", "unset",
+        "unsetopt", "vared", "wait", "whence", "where", "which", "zcompile", "zformat", "zle",
+        "zmodload", "zparseopts", "zregexparse", "zstyle",
+    ]
     /// Complete user records must fit comfortably below Darwin's canonical tty
     /// queue. Acceptance is decided before the first byte reaches the PTY.
     static let maximumTerminalLineBytes = 512
@@ -267,6 +285,7 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
                 onOutput: onOutput,
                 onEvent: onEvent
             )
+            session.shellCommandNames = Self.zshBuiltinCommandNames
             sessions[id] = session
             installSources(for: session)
             sendInitialization(to: session)
@@ -345,6 +364,7 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
             let cwd = session.cwd
             let path = session.path
             let home = session.home
+            let shellCommandNames = session.shellCommandNames
             self.completionQueue.async { [weak self, weak session] in
                 let result = Self.completions(
                     input: input,
@@ -352,6 +372,7 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
                     cwd: cwd,
                     path: path,
                     home: home,
+                    shellCommandNames: shellCommandNames,
                     requestID: requestID
                 )
                 guard let self, let session else { return }
@@ -468,10 +489,11 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
         __launcher_emit() { /usr/bin/printf '%s\\n' "$1" >&3 }
         __launcher_ready() { __launcher_emit $'R\\t'"$(/usr/bin/printf '%s' "$PWD" | /usr/bin/base64)"$'\\t'"$(/usr/bin/printf '%s' "$PATH" | /usr/bin/base64)" }
         __launcher_finish() {
-          local __l_status="$1" __l_cwd __l_path
+          local __l_status="$1" __l_cwd __l_path __l_home
           __l_cwd="$(/usr/bin/printf '%s' "$PWD" | /usr/bin/base64)"
           __l_path="$(/usr/bin/printf '%s' "$PATH" | /usr/bin/base64)"
-          __launcher_emit $'F\\t'"$__l_status"$'\\t'"$__l_cwd"$'\\t'"$__l_path"
+          __l_home="$(/usr/bin/printf '%s' "$HOME" | /usr/bin/base64)"
+          __launcher_emit $'F\\t'"$__l_status"$'\\t'"$__l_cwd"$'\\t'"$__l_path"$'\\t'"$__l_home"
         }
         __launcher_run() {
           local __l_b64 __l_cmd __l_status=''
@@ -606,6 +628,9 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
             guard let status = Int32(fields[1]),
                   let cwd = decode64(fields[2]),
                   let path = decode64(fields[3]) else { return }
+            if fields.indices.contains(4), let home = decode64(fields[4]) {
+                session.home = home
+            }
             session.cwd = cwd
             session.path = path
             // POSIX writes command output before the control frame, but the two
@@ -840,47 +865,166 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
 
     // MARK: Completion
 
+    private struct CompletionTokenContext {
+        let start: Int
+        let token: String
+        let openingQuote: Character?
+        let isCommand: Bool
+    }
+
+    /// Finds the shell word at the caret while retaining just enough grammar
+    /// to distinguish commands from arguments and redirection targets. This is
+    /// intentionally not a shell evaluator: quotes and escapes are only used
+    /// as lexical boundaries, and no user text is executed during completion.
+    private static func completionTokenContext(
+        utf16: [UInt16],
+        cursor: Int
+    ) -> CompletionTokenContext {
+        var start = 0
+        var index = 0
+        var quote: UInt16?
+        var escaped = false
+        var hasCurrentToken = false
+        var expectsCommand = true
+        var expectsRedirectionTarget = false
+
+        func isAssignmentWord(_ units: ArraySlice<UInt16>) -> Bool {
+            guard let first = units.first,
+                  first == 0x5F || (0x41...0x5A).contains(first) || (0x61...0x7A).contains(first)
+            else { return false }
+            for value in units.dropFirst() {
+                if value == 0x3D { return true }
+                guard value == 0x5F
+                    || (0x30...0x39).contains(value)
+                    || (0x41...0x5A).contains(value)
+                    || (0x61...0x7A).contains(value)
+                else { return false }
+            }
+            return false
+        }
+
+        func isFileDescriptorWord(_ units: ArraySlice<UInt16>) -> Bool {
+            !units.isEmpty && units.allSatisfy { (0x30...0x39).contains($0) }
+        }
+
+        func finishCurrentWord(at end: Int) {
+            guard hasCurrentToken else { return }
+            let units = utf16[start..<end]
+            if expectsRedirectionTarget {
+                expectsRedirectionTarget = false
+            } else if expectsCommand, !isAssignmentWord(units) {
+                expectsCommand = false
+            }
+            hasCurrentToken = false
+        }
+
+        while index < cursor {
+            let value = utf16[index]
+            if escaped {
+                escaped = false
+                hasCurrentToken = true
+                index += 1
+                continue
+            }
+            if value == 0x5C, quote != 0x27 {
+                escaped = true
+                hasCurrentToken = true
+                index += 1
+                continue
+            }
+            if let activeQuote = quote {
+                if value == activeQuote { quote = nil }
+                hasCurrentToken = true
+                index += 1
+                continue
+            }
+            if value == 0x27 || value == 0x22 {
+                quote = value
+                hasCurrentToken = true
+                index += 1
+                continue
+            }
+
+            if value == 0x0A || value == 0x3B || value == 0x7C
+                || (value == 0x26 && !(index + 1 < cursor && utf16[index + 1] == 0x3E))
+                || value == 0x28 || value == 0x29 {
+                finishCurrentWord(at: index)
+                expectsCommand = true
+                expectsRedirectionTarget = false
+                hasCurrentToken = false
+                index += 1
+                if index < cursor,
+                   (value == 0x7C || value == 0x26),
+                   utf16[index] == value {
+                    index += 1
+                }
+                start = index
+                continue
+            }
+
+            let isAmpersandRedirection = value == 0x26
+                && index + 1 < cursor
+                && utf16[index + 1] == 0x3E
+            if value == 0x3C || value == 0x3E || isAmpersandRedirection {
+                if hasCurrentToken {
+                    let units = utf16[start..<index]
+                    if isFileDescriptorWord(units) {
+                        hasCurrentToken = false
+                    } else {
+                        finishCurrentWord(at: index)
+                    }
+                }
+                expectsRedirectionTarget = true
+
+                if isAmpersandRedirection { index += 1 }
+                let direction = utf16[index]
+                index += 1
+                while index < cursor, utf16[index] == direction { index += 1 }
+                if index < cursor, utf16[index] == 0x26 || utf16[index] == 0x7C {
+                    index += 1
+                }
+                start = index
+                continue
+            }
+
+            if value == 0x20 || value == 0x09 {
+                finishCurrentWord(at: index)
+                index += 1
+                start = index
+                continue
+            }
+
+            hasCurrentToken = true
+            index += 1
+        }
+
+        let token = String(decoding: utf16[start..<cursor], as: UTF16.self)
+        let openingQuote = token.first.flatMap { $0 == "'" || $0 == "\"" ? $0 : nil }
+        let currentIsAssignment = expectsCommand && isAssignmentWord(utf16[start..<cursor])
+        return CompletionTokenContext(
+            start: start,
+            token: token,
+            openingQuote: openingQuote,
+            isCommand: expectsCommand && !expectsRedirectionTarget && !currentIsAssignment
+        )
+    }
+
     private static func completions(
         input: String,
         cursorUTF16: Int,
         cwd: String,
         path: String,
         home: String,
+        shellCommandNames: Set<String>,
         requestID: ShellCompletionRequestID
     ) -> ShellCompletionResult {
         let utf16 = Array(input.utf16)
         let cursor = max(0, min(cursorUTF16, utf16.count))
-        var start = 0
-        var quote: UInt16?
-        var escaped = false
-        var hasCurrentToken = false
-        var isCommand = true
-        for index in 0..<cursor {
-            let scalar = utf16[index]
-            if escaped { escaped = false; hasCurrentToken = true; continue }
-            if scalar == 0x5C, quote != 0x27 { escaped = true; hasCurrentToken = true; continue }
-            if let activeQuote = quote {
-                if scalar == activeQuote { quote = nil }
-                hasCurrentToken = true
-                continue
-            }
-            if scalar == 0x27 || scalar == 0x22 {
-                quote = scalar
-                hasCurrentToken = true
-            } else if scalar == 0x20 || scalar == 0x09 || scalar == 0x0A {
-                if hasCurrentToken { isCommand = false }
-                start = index + 1
-                hasCurrentToken = false
-            } else if scalar == 0x3B || scalar == 0x7C || scalar == 0x26 {
-                isCommand = true
-                start = index + 1
-                hasCurrentToken = false
-            } else {
-                hasCurrentToken = true
-            }
-        }
-        let token = String(decoding: utf16[start..<cursor], as: UTF16.self)
-        let openingQuote = token.first.flatMap { $0 == "'" || $0 == "\"" ? $0 : nil }
+        let context = completionTokenContext(utf16: utf16, cursor: cursor)
+        let start = context.start
+        let token = context.token
+        let openingQuote = context.openingQuote
+        let isCommand = context.isCommand
         var unescaped = openingQuote == nil ? token : String(token.dropFirst())
         unescaped = shellUnescape(unescaped, quote: openingQuote)
         var candidates = Set<String>()
@@ -921,6 +1065,9 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
             addFiles(in: searchDirectory, prefix: prefix, displayedDirectory: displayDirectory)
         }
         if isCommand, !unescaped.contains("/") {
+            for name in shellCommandNames where name.hasPrefix(unescaped) {
+                candidates.insert(shellEscape(name, quote: openingQuote))
+            }
             for directory in path.split(separator: ":", omittingEmptySubsequences: false) {
                 let entry = String(directory)
                 let resolved = entry.isEmpty
