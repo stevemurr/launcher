@@ -39,7 +39,7 @@ struct ShellConsoleView: View {
         HStack(spacing: 8) {
             Image(systemName: "apple.terminal")
                 .font(.system(size: 12, weight: .semibold))
-            Text("Shell")
+            Text(model.shellSessionDisplayName)
                 .font(.system(size: 13, weight: .semibold))
             Text(model.shellWorkingDirectoryDisplay)
                 .font(.system(size: 12, weight: .medium, design: .monospaced))

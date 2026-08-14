@@ -33,6 +33,10 @@ struct ScriptRunState: Equatable {
 
 struct ShellRunState: Equatable {
     let id: ShellSessionID
+    /// Stable, non-secret identity shown anywhere outside the selected
+    /// console transcript. Commands may contain credentials and must never be
+    /// repurposed as session names.
+    let displayName: String
     var command: String
     /// Last foreground-command status, retained for the console badge and for
     /// source compatibility with the previous one-shot run model.
@@ -68,6 +72,7 @@ enum LauncherAction: String, CaseIterable, Identifiable {
     case copyPath
     case copyScriptContents
     case deleteScript
+    case closeShell
 
     var id: String { rawValue }
 
@@ -81,6 +86,7 @@ enum LauncherAction: String, CaseIterable, Identifiable {
         case .copyPath: "Copy Path"
         case .copyScriptContents: "Copy Script Contents"
         case .deleteScript: "Delete Script Command"
+        case .closeShell: "Close Shell"
         }
     }
 
@@ -94,6 +100,7 @@ enum LauncherAction: String, CaseIterable, Identifiable {
         case .copyPath: "doc.on.doc"
         case .copyScriptContents: "doc.on.clipboard"
         case .deleteScript: "trash"
+        case .closeShell: "xmark.circle"
         }
     }
 
@@ -107,6 +114,7 @@ enum LauncherAction: String, CaseIterable, Identifiable {
         case .copyPath: "⌘⇧C"
         case .copyScriptContents: "⌥⌘C"
         case .deleteScript: "⌃X"
+        case .closeShell: ""
         }
     }
 }
@@ -402,6 +410,7 @@ final class LauncherModel: ObservableObject {
     private var shellCompletionSelectsLastCandidate = false
     private var pendingShellCommands: [ShellSessionID: String] = [:]
     private var pendingShellCompletionRequests: [ShellSessionID: PendingShellCompletionRequest] = [:]
+    private var nextShellSessionNumber = 1
     private let launcherSettingsItem = LauncherItem(
         id: "launcher.settings",
         title: "Launcher Settings",
@@ -477,6 +486,10 @@ final class LauncherModel: ObservableObject {
         return displayShellDirectory(directory)
     }
 
+    var shellSessionDisplayName: String {
+        shellRun?.displayName ?? "Shell"
+    }
+
     private func displayShellDirectory(_ directory: String) -> String {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         if directory == home { return "~" }
@@ -512,6 +525,11 @@ final class LauncherModel: ObservableObject {
         case .application: return [.open, .showInFinder, .copyPath]
         case .scriptCommand: return [.open, .editScript, .showInFinder, .copyScriptContents, .deleteScript]
         case .file, .directory: return [.open, .openWith, .showInFinder, .quickLook, .copyPath]
+        case .runningShell:
+            guard case let .shellSession(id) = item.destination,
+                  shellSessions.contains(where: { $0.id == id && $0.sessionPhase == .ready })
+            else { return [.open] }
+            return [.open, .closeShell]
         default: return [.open]
         }
     }
@@ -533,8 +551,7 @@ final class LauncherModel: ObservableObject {
     var searchFieldPlaceholder: String {
         if isShellMode {
             if shellInputMode == .foreground {
-                let command = shellRun?.command.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                return command.isEmpty ? "Send input…" : "Send input to \(command)…"
+                return "Send input to \(shellSessionDisplayName)…"
             }
             return "Enter a shell command…"
         }
@@ -567,7 +584,7 @@ final class LauncherModel: ObservableObject {
     }
 
     var displayedRunTitle: String {
-        if let shellRun { return shellRun.command }
+        if let shellRun { return shellRun.displayName }
         return scriptRun?.script.title ?? ""
     }
 
@@ -579,6 +596,10 @@ final class LauncherModel: ObservableObject {
     var canStopShellSession: Bool {
         guard isShellMode, let phase = shellRun?.sessionPhase else { return false }
         return phase == .starting || phase == .foreground
+    }
+
+    var canCloseShellSession: Bool {
+        isShellMode && shellRun?.sessionPhase == .ready
     }
 
     /// Whether there is output worth showing in the ⌘P pane. Silent scripts opt
@@ -860,6 +881,9 @@ final class LauncherModel: ObservableObject {
                   let contents = try? String(contentsOf: fileURL, encoding: .utf8) else { return }
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(contents, forType: .string)
+        case .closeShell:
+            guard case let .shellSession(id) = target.destination else { return }
+            closeShellSession(id: id)
         }
     }
 
@@ -1273,6 +1297,36 @@ final class LauncherModel: ObservableObject {
         }
     }
 
+    /// Closes exactly one idle persistent session. A selected console leaves
+    /// Shell mode immediately; a background row disappears as soon as its
+    /// close begins and the final service callback removes its retained state.
+    func closeShellSession(id: ShellSessionID) {
+        guard let index = shellSessions.firstIndex(where: { $0.id == id }),
+              shellSessions[index].sessionPhase == .ready else { return }
+
+        shellSessions[index].sessionPhase = .closing
+        pendingShellCommands[id] = nil
+        pendingShellCompletionRequests[id] = nil
+        if activeShellCompletionRequestID != nil, selectedShellSessionID == id {
+            dismissShellCompletion()
+        }
+
+        if selectedShellSessionID == id, isShellMode {
+            // exitShellMode removes the selected closing state and refreshes
+            // the compact results before the potentially synchronous close
+            // callback arrives.
+            exitShellMode()
+        } else {
+            refreshBackgroundShellResultsIfVisible()
+        }
+        shellSessionManager.closeSession(id)
+    }
+
+    func closeSelectedShellSession() {
+        guard let id = selectedShellSessionID else { return }
+        closeShellSession(id: id)
+    }
+
     func cancelCurrentRun() {
         if canStopShellSession {
             cancelShellCommand()
@@ -1510,6 +1564,7 @@ final class LauncherModel: ObservableObject {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         var nextRun = ShellRunState(
             id: id,
+            displayName: "Shell \(nextShellSessionNumber)",
             command: "",
             phase: .running,
             sessionPhase: .starting,
@@ -1542,6 +1597,7 @@ final class LauncherModel: ObservableObject {
             NSSound.beep()
             return false
         }
+        nextShellSessionNumber += 1
 
         if let previousRun, previousRun.sessionPhase == .closing {
             shellSessions.removeAll { $0.id == previousRun.id }
@@ -1577,7 +1633,10 @@ final class LauncherModel: ObservableObject {
         appendShellHistory(command)
         shellHistoryIndex = shellHistory.count
         shellHistoryDraft = ""
-        clearShellDraft()
+        // A slow first shell startup leaves the submitted text visible until
+        // Ready. If the user has already replaced it with their next draft,
+        // do not erase that newer input when the pending command is accepted.
+        if query == command { clearShellDraft() }
         isRunPalettePresented = false
         return true
     }
@@ -2062,21 +2121,20 @@ final class LauncherModel: ObservableObject {
         }
         let runningShellItems = shellSessions.reversed().compactMap { run -> LauncherItem? in
             guard run.sessionPhase != .closing else { return nil }
-            let title = run.command.isEmpty ? "Shell Session" : run.command
             let stateDescription: String
             switch run.sessionPhase {
-            case .starting: stateDescription = "Starting Shell"
+            case .starting: stateDescription = "Starting in \(displayShellDirectory(run.workingDirectory))"
             case .ready: stateDescription = "Ready in \(displayShellDirectory(run.workingDirectory))"
-            case .foreground: stateDescription = "Running in Shell"
+            case .foreground: stateDescription = "Running in \(displayShellDirectory(run.workingDirectory))"
             case .closing: return nil
             }
             return LauncherItem(
                 id: "shell.\(run.id.rawValue.uuidString)",
-                title: title,
+                title: run.displayName,
                 subtitle: stateDescription,
                 kind: .runningShell,
                 destination: .shellSession(run.id),
-                keywords: "running shell terminal command \(run.command) \(run.workingDirectory)",
+                keywords: "\(run.displayName) running shell terminal session \(stateDescription)",
                 detail: run.sessionPhase == .foreground ? "Running" : "Ready"
             )
         }

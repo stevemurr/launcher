@@ -463,6 +463,24 @@ private struct LauncherSearchView: View {
                 .accessibilityIdentifier("shell.stop")
             }
 
+            if model.canCloseShellSession {
+                Button {
+                    model.closeSelectedShellSession()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "xmark.circle")
+                            .font(.system(size: 12, weight: .semibold))
+                        Text("Close Shell")
+                            .font(.system(size: 13, weight: .semibold))
+                    }
+                    .foregroundStyle(Color.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Close this persistent shell session")
+                .accessibilityIdentifier("shell.close")
+                .accessibilityLabel("Close \(model.shellSessionDisplayName)")
+            }
+
             Spacer()
 
             Text(shellFooterStatus)
@@ -787,8 +805,23 @@ private struct ResultRow: View {
         .onHover { hovering in
             if hovering { onSelect() }
         }
-        .accessibilityIdentifier("result.\(item.title)")
-        .accessibilityLabel("\(item.title), \(item.kind.rawValue)")
+        .accessibilityIdentifier(LauncherResultPresentation.accessibilityIdentifier(for: item))
+        .accessibilityLabel(LauncherResultPresentation.accessibilityLabel(for: item))
+    }
+}
+
+enum LauncherResultPresentation {
+    static func accessibilityIdentifier(for item: LauncherItem) -> String {
+        "result.\(item.title)"
+    }
+
+    static func accessibilityLabel(for item: LauncherItem) -> String {
+        guard item.kind == .runningShell else {
+            return "\(item.title), \(item.kind.rawValue)"
+        }
+        return [item.title, item.subtitle, item.kind.rawValue]
+            .compactMap { $0 }
+            .joined(separator: ", ")
     }
 }
 
@@ -851,7 +884,9 @@ private struct ActionsPalette: View {
                         Text(displayTitle(for: action))
                             .font(.system(size: 16, weight: .medium))
                         Spacer()
-                        KeyCap(action.shortcut)
+                        if !action.shortcut.isEmpty {
+                            KeyCap(action.shortcut)
+                        }
                     }
                     .foregroundStyle(Color.primary)
                     .padding(.horizontal, 10)
