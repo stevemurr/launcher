@@ -327,7 +327,10 @@ final class LauncherModel: ObservableObject {
     @Published var screen: LauncherScreen = .search {
         didSet {
             // Settings and Create Script render at full window width.
-            if screen != .search { setPanelPresentation(.compact) }
+            if screen != .search {
+                prepareForDismissal()
+                setPanelPresentation(.compact)
+            }
         }
     }
     @Published var isActionsPresented = false
