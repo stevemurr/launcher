@@ -1596,6 +1596,8 @@ final class LauncherModel: ObservableObject {
         switch reason {
         case .sessionNotForeground:
             return "No foreground process is accepting input."
+        case .sessionFinishing:
+            return "The foreground command is finishing. Try again when the shell is ready."
         case .containsNUL:
             return "Shell input cannot contain a null character."
         case .containsLineBreak:
@@ -1604,6 +1606,8 @@ final class LauncherModel: ObservableObject {
             return "Input is too long for this prompt (maximum \(maximumBytes) bytes)."
         case let .nonCanonicalLineTooLong(maximumBytes):
             return "Input exceeds the \(maximumBytes)-byte shell input limit."
+        case let .inputQueueFull(maximumBytes):
+            return "The shell input queue is full (maximum \(maximumBytes) bytes). Wait and try again."
         case .terminalStateUnavailable:
             return "Shell input state is unavailable. Try again."
         case .transportFailed:

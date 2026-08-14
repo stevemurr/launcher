@@ -516,10 +516,18 @@ final class LauncherModelShellTests: XCTestCase {
 
         let cases: [(ShellInputRejectionReason, String)] = [
             (.sessionNotForeground, "No foreground process is accepting input."),
+            (
+                .sessionFinishing,
+                "The foreground command is finishing. Try again when the shell is ready."
+            ),
             (.containsNUL, "Shell input cannot contain a null character."),
             (.containsLineBreak, "Send one line at a time."),
             (.canonicalLineTooLong(maximumBytes: 511), "Input is too long for this prompt (maximum 511 bytes)."),
             (.nonCanonicalLineTooLong(maximumBytes: 65_536), "Input exceeds the 65536-byte shell input limit."),
+            (
+                .inputQueueFull(maximumBytes: 262_144),
+                "The shell input queue is full (maximum 262144 bytes). Wait and try again."
+            ),
             (.terminalStateUnavailable, "Shell input state is unavailable. Try again."),
             (.transportFailed, "Could not send input to the shell."),
         ]
