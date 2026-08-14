@@ -119,10 +119,11 @@ final class ProcessPersistentShellSessionManagerTests: XCTestCase {
         }))
         wait(for: [ready], timeout: 5)
 
-        // The original protocol depended on these mutable function/hook names;
-        // removing them made the manager wait forever on the next submission.
+        // The protocol must not depend on user-mutable helper names or on the
+        // current alias/enable state of zsh's `builtin` primitive.
         XCTAssertTrue(manager.submitCommand(
-            "unfunction __launcher_run; precmd_functions=()",
+            "unfunction __launcher_run; precmd_functions=(); "
+                + "alias builtin=false; disable builtin",
             to: id
         ))
         wait(for: [mutationFinished], timeout: 5)
@@ -130,6 +131,92 @@ final class ProcessPersistentShellSessionManagerTests: XCTestCase {
         wait(for: [recovered], timeout: 5)
         XCTAssertTrue(transcript.contains("PROTOCOL_SURVIVED"), transcript)
         XCTAssertFalse(transcript.contains("__launcher_private_b64"), transcript)
+    }
+
+    func testSlowPrecmdIsToleratedAndFinishingInputCannotEscapeTheProtocol() {
+        let manager = makeManager()
+        let id = ShellSessionID()
+        let ready = expectation(description: "ready")
+        let hookStarted = expectation(description: "slow precmd started")
+        let slowCommandFinished = expectation(description: "slow-hook command finished")
+        let followupFinished = expectation(description: "follow-up command finished")
+        var transcript = ""
+        var observedHook = false
+        var finishCount = 0
+        var unexpectedClosedResult: ScriptRunResult?
+
+        XCTAssertTrue(manager.startSession(id: id, onOutput: { _, output in
+            transcript += output
+            if !observedHook, transcript.contains("SLOW_PRECMD_STARTED") {
+                observedHook = true
+                hookStarted.fulfill()
+            }
+        }, onEvent: { _, event in
+            switch event {
+            case .ready:
+                ready.fulfill()
+            case .foregroundFinished:
+                finishCount += 1
+                (finishCount == 1 ? slowCommandFinished : followupFinished).fulfill()
+            case let .closed(result):
+                unexpectedClosedResult = result
+            default:
+                break
+            }
+        }))
+        wait(for: [ready], timeout: 5)
+
+        // The hook removes itself only after spending two seconds between the
+        // F frame and the manager's queued Q probe.
+        let slowHook = "slow_precmd() { print SLOW_PRECMD_STARTED; /bin/sleep 2; "
+            + "precmd_functions=(${precmd_functions:#slow_precmd}); "
+            + "unfunction slow_precmd; }; precmd_functions+=(slow_precmd)"
+        XCTAssertTrue(manager.submitCommand(slowHook, to: id))
+        wait(for: [hookStarted], timeout: 5)
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.2))
+
+        XCTAssertEqual(
+            manager.submitInputLine("echo UNMANAGED_INPUT_SENTINEL", to: id),
+            .rejected(.sessionFinishing)
+        )
+        wait(for: [slowCommandFinished], timeout: 6)
+        XCTAssertFalse(transcript.contains("UNMANAGED_INPUT_SENTINEL"), transcript)
+
+        XCTAssertTrue(manager.submitCommand("echo SLOW_PRECMD_SURVIVED", to: id))
+        wait(for: [followupFinished], timeout: 5)
+        XCTAssertTrue(transcript.contains("SLOW_PRECMD_SURVIVED"), transcript)
+        XCTAssertFalse(transcript.contains("UNMANAGED_INPUT_SENTINEL"), transcript)
+        XCTAssertNil(unexpectedClosedResult)
+    }
+
+    func testWedgedPrecmdStillClosesWithAnActionableProbeTimeout() {
+        let manager = makeManager(controlProbeTimeout: 0.25)
+        let id = ShellSessionID()
+        let ready = expectation(description: "ready")
+        let closed = expectation(description: "wedged hook closed")
+        var closedResult: ScriptRunResult?
+
+        XCTAssertTrue(manager.startSession(id: id, onOutput: { _, _ in }, onEvent: { _, event in
+            switch event {
+            case .ready:
+                ready.fulfill()
+            case let .closed(result):
+                closedResult = result
+                closed.fulfill()
+            default:
+                break
+            }
+        }))
+        wait(for: [ready], timeout: 5)
+        XCTAssertTrue(manager.submitCommand(
+            "wedged_precmd() { /bin/sleep 30; }; precmd_functions+=(wedged_precmd)",
+            to: id
+        ))
+        wait(for: [closed], timeout: 4)
+        guard case let .failedToStart(message) = closedResult else {
+            return XCTFail("expected actionable protocol failure, got \(String(describing: closedResult))")
+        }
+        XCTAssertTrue(message.localizedCaseInsensitiveContains("probe timed out"), message)
     }
 
     func testForegroundReadAcceptsInputLine() {
@@ -297,6 +384,94 @@ final class ProcessPersistentShellSessionManagerTests: XCTestCase {
         )
         XCTAssertEqual(manager.inputEchoState(for: id), .enabled)
         XCTAssertEqual(echoStates, [.enabled, .disabled, .enabled])
+    }
+
+    func testQueuedRawInputReturnsPromptlyAndDeliversOneCompleteRecord() {
+        let manager = makeManager()
+        let id = ShellSessionID()
+        let ready = expectation(description: "ready")
+        let readerReady = expectation(description: "delayed raw reader ready")
+        let finished = expectation(description: "queued raw input finished")
+        var transcript = ""
+        var observedReady = false
+
+        XCTAssertTrue(manager.startSession(id: id, onOutput: { _, output in
+            transcript += output
+            if !observedReady, transcript.contains("QUEUED_INPUT_READY") {
+                observedReady = true
+                readerReady.fulfill()
+            }
+        }, onEvent: { _, event in
+            switch event {
+            case .ready: ready.fulfill()
+            case .foregroundFinished: finished.fulfill()
+            default: break
+            }
+        }))
+        wait(for: [ready], timeout: 5)
+
+        let delayedReader = #"/bin/stty -icanon -echo min 1 time 0; print QUEUED_INPUT_READY; /bin/sleep 1; /usr/bin/perl -e '$|=1; my $value=""; while (sysread(STDIN, my $character, 1)) { last if $character eq "\r" || $character eq "\n"; $value.=$character } print "QUEUED_LENGTH:".length($value)."\n";'; /bin/stty icanon echo"#
+        XCTAssertTrue(manager.submitCommand(delayedReader, to: id))
+        wait(for: [readerReady], timeout: 5)
+
+        let input = String(repeating: "q", count: ProcessPersistentShellSessionManager.maximumNonCanonicalInputBytes)
+        let admissionStarted = Date()
+        XCTAssertEqual(manager.submitInputLine(input, to: id), .accepted)
+        XCTAssertLessThan(
+            Date().timeIntervalSince(admissionStarted),
+            0.5,
+            "admission must enqueue rather than poll a blocked PTY for one second"
+        )
+
+        wait(for: [finished], timeout: 10)
+        XCTAssertTrue(
+            transcript.contains("QUEUED_LENGTH:\(input.utf8.count)"),
+            String(transcript.suffix(1_000))
+        )
+    }
+
+    func testForegroundEchoObservationBacksOffForQuietLongRunningJobs() {
+        let observationLock = NSLock()
+        var observationCount = 0
+        let manager = makeManager(onTerminalEchoObservation: {
+            observationLock.lock()
+            observationCount += 1
+            observationLock.unlock()
+        })
+        func currentObservationCount() -> Int {
+            observationLock.lock()
+            defer { observationLock.unlock() }
+            return observationCount
+        }
+
+        let id = ShellSessionID()
+        let ready = expectation(description: "ready")
+        let started = expectation(description: "quiet foreground started")
+        let interrupted = expectation(description: "quiet foreground interrupted")
+        XCTAssertTrue(manager.startSession(id: id, onOutput: { _, _ in }, onEvent: { _, event in
+            switch event {
+            case .ready: ready.fulfill()
+            case .foregroundStarted: started.fulfill()
+            case .foregroundFinished: interrupted.fulfill()
+            default: break
+            }
+        }))
+        wait(for: [ready], timeout: 5)
+        XCTAssertTrue(manager.submitCommand("/bin/sleep 30", to: id))
+        wait(for: [started], timeout: 5)
+
+        let baseline = currentObservationCount()
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 2))
+        let quietObservations = currentObservationCount() - baseline
+        XCTAssertGreaterThan(quietObservations, 10)
+        XCTAssertLessThan(
+            quietObservations,
+            50,
+            "quiet persisted jobs must not retain permanent 25ms tcgetattr polling"
+        )
+
+        manager.interruptForeground(in: id)
+        wait(for: [interrupted], timeout: 5)
     }
 
     func testStartupTimeoutClosesBlockedZshInitializationAsFailedToStart() throws {
@@ -510,6 +685,149 @@ final class ProcessPersistentShellSessionManagerTests: XCTestCase {
             directoryCompletion.fulfill()
         }
         wait(for: [fileCompletion, pathCompletion, maliciousCompletion, tildeCompletion, relativePATHCompletion, pipeCompletion, directoryCompletion], timeout: 5)
+    }
+
+    func testCompletionReplacementRangeCoversTheWholeTokenAfterTheCaret() throws {
+        let directory = try makeTemporaryDirectory(named: "whole-token-completion")
+        let quotedCandidate = directory.appendingPathComponent("some file.txt")
+        XCTAssertTrue(FileManager.default.createFile(
+            atPath: quotedCandidate.path,
+            contents: Data()
+        ))
+        let manager = makeManager(workingDirectory: directory)
+        let id = ShellSessionID()
+        let ready = expectation(description: "ready")
+        let completed = expectation(description: "mid-token completion ranges")
+        completed.expectedFulfillmentCount = 3
+
+        XCTAssertTrue(manager.startSession(id: id, onOutput: { _, _ in }, onEvent: { _, event in
+            if case .ready = event { ready.fulfill() }
+        }))
+        wait(for: [ready], timeout: 5)
+
+        let midTokenInput = "/usr/bin/printenv --flag"
+        let midTokenCursor = ("/usr/bin/pri" as NSString).length
+        let midTokenEnd = ("/usr/bin/printenv" as NSString).length
+        manager.requestCompletions(
+            input: midTokenInput,
+            cursorUTF16: midTokenCursor,
+            in: id,
+            requestID: ShellCompletionRequestID()
+        ) { _, result in
+            XCTAssertEqual(result.replacementRange, 0..<midTokenEnd)
+            XCTAssertTrue(result.candidates.contains("/usr/bin/printf"), "\(result.candidates)")
+            completed.fulfill()
+        }
+
+        let quotedInput = #"echo "some fiOLD" --flag"#
+        let quotedStart = ("echo " as NSString).length
+        let quotedCursor = (#"echo "some fi"# as NSString).length
+        let quotedEnd = (#"echo "some fiOLD""# as NSString).length
+        manager.requestCompletions(
+            input: quotedInput,
+            cursorUTF16: quotedCursor,
+            in: id,
+            requestID: ShellCompletionRequestID()
+        ) { _, result in
+            XCTAssertEqual(result.replacementRange, quotedStart..<quotedEnd)
+            XCTAssertTrue(result.candidates.contains(#""some file.txt""#), "\(result.candidates)")
+            completed.fulfill()
+        }
+
+        let emojiInput = "echo 😀 /usr/bin/printenv🧪 --flag"
+        let emojiStart = ("echo 😀 " as NSString).length
+        let emojiCursor = ("echo 😀 /usr/bin/pri" as NSString).length
+        let emojiEnd = ("echo 😀 /usr/bin/printenv🧪" as NSString).length
+        manager.requestCompletions(
+            input: emojiInput,
+            cursorUTF16: emojiCursor,
+            in: id,
+            requestID: ShellCompletionRequestID()
+        ) { _, result in
+            XCTAssertEqual(result.replacementRange, emojiStart..<emojiEnd)
+            XCTAssertTrue(result.candidates.contains("/usr/bin/printf"), "\(result.candidates)")
+            completed.fulfill()
+        }
+
+        wait(for: [completed], timeout: 5)
+    }
+
+    func testCompletionTracksLiveAliasesAndFunctionsWithoutEvaluatingThem() {
+        let manager = makeManager()
+        let id = ShellSessionID()
+        let ready = expectation(description: "ready")
+        let definitionsFinished = expectation(description: "definitions finished")
+        let removalsFinished = expectation(description: "removals finished")
+        var finishCount = 0
+        var transcript = ""
+
+        XCTAssertTrue(manager.startSession(id: id, onOutput: { _, output in
+            transcript += output
+        }, onEvent: { _, event in
+            switch event {
+            case .ready:
+                ready.fulfill()
+            case .foregroundFinished:
+                finishCount += 1
+                (finishCount == 1 ? definitionsFinished : removalsFinished).fulfill()
+            default:
+                break
+            }
+        }))
+        wait(for: [ready], timeout: 5)
+
+        let aliasName = "launcher_test_live_alias"
+        let functionName = "launcher_test_live_function"
+        XCTAssertTrue(manager.submitCommand(
+            "alias \(aliasName)='print ALIAS_BODY_WAS_EVALUATED'; "
+                + "\(functionName)() { print FUNCTION_BODY_WAS_EVALUATED; }",
+            to: id
+        ))
+        wait(for: [definitionsFinished], timeout: 5)
+
+        let discovered = expectation(description: "live commands discovered")
+        discovered.expectedFulfillmentCount = 2
+        for (prefix, expected) in [
+            ("launcher_test_live_a", aliasName),
+            ("launcher_test_live_f", functionName),
+        ] {
+            manager.requestCompletions(
+                input: prefix,
+                cursorUTF16: (prefix as NSString).length,
+                in: id,
+                requestID: ShellCompletionRequestID()
+            ) { _, result in
+                XCTAssertTrue(result.candidates.contains(expected), "\(result.candidates)")
+                discovered.fulfill()
+            }
+        }
+        wait(for: [discovered], timeout: 5)
+        XCTAssertFalse(transcript.contains("ALIAS_BODY_WAS_EVALUATED"), transcript)
+        XCTAssertFalse(transcript.contains("FUNCTION_BODY_WAS_EVALUATED"), transcript)
+
+        XCTAssertTrue(manager.submitCommand(
+            "unalias \(aliasName); unfunction \(functionName)",
+            to: id
+        ))
+        wait(for: [removalsFinished], timeout: 5)
+
+        let removed = expectation(description: "removed commands disappear")
+        removed.expectedFulfillmentCount = 2
+        for (prefix, removedName) in [
+            ("launcher_test_live_a", aliasName),
+            ("launcher_test_live_f", functionName),
+        ] {
+            manager.requestCompletions(
+                input: prefix,
+                cursorUTF16: (prefix as NSString).length,
+                in: id,
+                requestID: ShellCompletionRequestID()
+            ) { _, result in
+                XCTAssertFalse(result.candidates.contains(removedName), "\(result.candidates)")
+                removed.fulfill()
+            }
+        }
+        wait(for: [removed], timeout: 5)
     }
 
     func testCompletionTracksHOMEAndUnderstandsShellCommandContexts() throws {
@@ -794,14 +1112,18 @@ final class ProcessPersistentShellSessionManagerTests: XCTestCase {
     private func makeManager(
         environment: [String: String] = ProcessInfo.processInfo.environment,
         workingDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
-        startupTimeout: TimeInterval = 8
+        startupTimeout: TimeInterval = 8,
+        controlProbeTimeout: TimeInterval = 8,
+        onTerminalEchoObservation: (() -> Void)? = nil
     ) -> ProcessPersistentShellSessionManager {
         let manager = ProcessPersistentShellSessionManager(
             shellPath: "/bin/zsh",
             environment: environment,
             workingDirectory: workingDirectory,
             helperExecutablePath: helperExecutablePath(),
-            startupTimeout: startupTimeout
+            startupTimeout: startupTimeout,
+            controlProbeTimeout: controlProbeTimeout,
+            onTerminalEchoObservation: onTerminalEchoObservation
         )
         managers.append(manager)
         return manager

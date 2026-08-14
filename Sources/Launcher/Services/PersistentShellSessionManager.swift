@@ -45,10 +45,12 @@ enum ShellInputEchoState: Equatable {
 /// Why a complete foreground input record was rejected before transport.
 enum ShellInputRejectionReason: Equatable {
     case sessionNotForeground
+    case sessionFinishing
     case containsNUL
     case containsLineBreak
     case canonicalLineTooLong(maximumBytes: Int)
     case nonCanonicalLineTooLong(maximumBytes: Int)
+    case inputQueueFull(maximumBytes: Int)
     case terminalStateUnavailable
     case transportFailed
 }
@@ -100,7 +102,9 @@ protocol PersistentShellSessionManaging: AnyObject {
     func sendInputLine(_ input: String, to id: ShellSessionID) -> Bool
 
     /// Sends one newline-terminated foreground input record with a typed result.
-    /// Rejections are atomic: no portion of the record is written.
+    /// Rejections are atomic: no portion of the record is written. Acceptance
+    /// transfers the complete record to the manager's nonblocking write queue;
+    /// a later transport failure closes the session with an actionable event.
     @discardableResult
     func submitInputLine(
         _ input: String,
@@ -155,6 +159,11 @@ extension PersistentShellSessionManaging {
 /// the Launcher executable.  That pristine helper can safely create a session,
 /// acquire the terminal, and `execve` the user's login shell.
 final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging {
+    private struct PendingInputRecord {
+        let data: Data
+        var offset = 0
+    }
+
     private struct UTF8Decoder {
         var carry: [UInt8] = []
 
@@ -204,6 +213,8 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
         var pendingOutput = ""
         var outputFlushScheduled = false
         var outputSource: DispatchSourceRead?
+        var inputWriteSource: DispatchSourceWrite?
+        var inputWriteSourceIsSuspended = true
         var controlSource: DispatchSourceRead?
         var processSource: DispatchSourceProcess?
         var closeRequested = false
@@ -218,6 +229,8 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
         var currentCommand: String?
         var inputEchoState: ShellInputEchoState?
         var echoPollGeneration = 0
+        var pendingInputRecords: [PendingInputRecord] = []
+        var pendingInputByteCount = 0
 
         init(
             id: ShellSessionID,
@@ -262,9 +275,13 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
     private let workingDirectory: URL
     private let helperExecutablePath: String
     private let startupTimeout: TimeInterval
+    private let controlProbeTimeout: TimeInterval
+    private let onTerminalEchoObservation: (() -> Void)?
     private var sessions: [ShellSessionID: Session] = [:]
     private static let outputFlushInterval: DispatchTimeInterval = .milliseconds(50)
     private static let maximumPendingOutputCharacters = 100_000
+    private static let fastEchoPollCount = 20
+    private static let moderateEchoPollCount = 10
     /// Baseline zsh builtins available without searching PATH. Keeping this
     /// local avoids evaluating user-controlled shell configuration merely to
     /// offer completion candidates.
@@ -290,6 +307,7 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
     /// Noncanonical readers consume bytes as they arrive and are not constrained
     /// by the canonical line queue. Retain a generous finite transport bound.
     static let maximumNonCanonicalInputBytes = 64 * 1_024
+    private static let maximumQueuedInputBytes = 256 * 1_024
     static let maximumCommandBytes = 64 * 1_024
 
     init(
@@ -299,7 +317,9 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
         environment: [String: String] = ProcessInfo.processInfo.environment,
         workingDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         helperExecutablePath: String? = nil,
-        startupTimeout: TimeInterval = 8
+        startupTimeout: TimeInterval = 8,
+        controlProbeTimeout: TimeInterval = 8,
+        onTerminalEchoObservation: (() -> Void)? = nil
     ) {
         self.shellPath = shellPath
         var environment = environment
@@ -317,6 +337,8 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
             ?? Bundle.main.executableURL?.path
             ?? ProcessInfo.processInfo.arguments[0]
         self.startupTimeout = max(0.01, startupTimeout)
+        self.controlProbeTimeout = max(0.1, controlProbeTimeout)
+        self.onTerminalEchoObservation = onTerminalEchoObservation
     }
 
     deinit {
@@ -408,6 +430,11 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
             guard let session = sessions[id], session.phase == .foreground else {
                 return .rejected(.sessionNotForeground)
             }
+            guard session.pendingForegroundResult == nil,
+                  !session.completionProbePending,
+                  !session.interruptProbePending else {
+                return .rejected(.sessionFinishing)
+            }
             guard !input.contains("\0") else { return .rejected(.containsNUL) }
             guard !input.contains("\n"), !input.contains("\r") else {
                 return .rejected(.containsLineBreak)
@@ -430,9 +457,18 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
                 }
             }
 
-            return write(input + "\r", to: session.masterFD)
-                ? .accepted
-                : .rejected(.transportFailed)
+            var record = Data(input.utf8)
+            record.append(0x0D)
+            guard session.pendingInputByteCount + record.count <= Self.maximumQueuedInputBytes else {
+                return .rejected(.inputQueueFull(maximumBytes: Self.maximumQueuedInputBytes))
+            }
+            session.pendingInputRecords.append(PendingInputRecord(data: record))
+            session.pendingInputByteCount += record.count
+            drainPendingInput(for: session)
+            // Acceptance means the complete record is owned by the manager.
+            // A later transport failure closes the session; it is never
+            // reported as a rejection after a prefix may have been written.
+            return .accepted
         }
     }
 
@@ -444,6 +480,7 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
         queue.async { [self] in
             guard let session = self.sessions[id], session.phase == .foreground else { return }
             guard !session.interruptSignalPending else { return }
+            self.discardPendingInput(for: session)
             session.interruptRequested = true
             session.interruptSignalPending = true
             session.interruptPollGeneration &+= 1
@@ -514,6 +551,7 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
     func closeSession(_ id: ShellSessionID) {
         queue.async {
             guard let session = self.sessions[id], !session.closeRequested else { return }
+            self.discardPendingInput(for: session)
             session.closeRequested = true
             session.phase = .closing
             let foregroundGroup = tcgetpgrp(session.masterFD)
@@ -529,6 +567,8 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
     func terminateAllImmediately() {
         queue.sync {
             for session in sessions.values {
+                discardPendingInput(for: session)
+                cancelInputWriteSource(for: session)
                 session.closeRequested = true
                 session.phase = .closing
                 Self.signalForeground(of: session, signal: SIGKILL)
@@ -581,22 +621,29 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
     /// or `precmd_functions` mutations.
     private static let commandWrapperScript = """
     () {
-      builtin local __launcher_private_b64 __launcher_private_command
-      builtin local __launcher_private_status='' __launcher_private_cwd __launcher_private_path __launcher_private_home
-      IFS= builtin read -r __launcher_private_b64 <&4 || builtin return 125
+      \\enable builtin 2>/dev/null
+      \\builtin local __launcher_private_b64 __launcher_private_command
+      \\builtin local __launcher_private_status='' __launcher_private_cwd __launcher_private_path __launcher_private_home
+      \\builtin local __launcher_private_shell_commands
+      IFS= \\builtin read -r __launcher_private_b64 <&4 || \\builtin return 125
       __launcher_private_command="$(/usr/bin/printf '%s' "$__launcher_private_b64" | /usr/bin/base64 -D)"
       /usr/bin/printf 'S\n' >&3
       {
-        builtin eval "$__launcher_private_command" 3>&- 4>&-
+        \\builtin eval "$__launcher_private_command" 3>&- 4>&-
         __launcher_private_status=$?
       } always {
+        \\enable builtin 2>/dev/null
         [[ -n "$__launcher_private_status" ]] || __launcher_private_status=130
         __launcher_private_cwd="$(/usr/bin/printf '%s' "$PWD" | /usr/bin/base64)"
         __launcher_private_path="$(/usr/bin/printf '%s' "$PATH" | /usr/bin/base64)"
         __launcher_private_home="$(/usr/bin/printf '%s' "$HOME" | /usr/bin/base64)"
-        /usr/bin/printf 'F\t%s\t%s\t%s\t%s\n' \
+        __launcher_private_shell_commands="$(
+          /usr/bin/printf '%s\\0' "${(@k)aliases}" "${(@k)functions}" | /usr/bin/base64
+        )"
+        /usr/bin/printf 'F\t%s\t%s\t%s\t%s\t%s\n' \
           "$__launcher_private_status" "$__launcher_private_cwd" \
-          "$__launcher_private_path" "$__launcher_private_home" >&3
+          "$__launcher_private_path" "$__launcher_private_home" \
+          "$__launcher_private_shell_commands" >&3
       }
     }
     """ + "\n"
@@ -606,13 +653,19 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
     /// user's ECHO setting before this anonymous probe begins executing.
     private static let interruptProbeScript = """
     () {
-      builtin local __launcher_private_probe __launcher_private_cwd __launcher_private_path __launcher_private_home
-      IFS= builtin read -r __launcher_private_probe <&4 || builtin return 125
+      \\enable builtin 2>/dev/null
+      \\builtin local __launcher_private_probe __launcher_private_cwd __launcher_private_path __launcher_private_home
+      \\builtin local __launcher_private_shell_commands
+      IFS= \\builtin read -r __launcher_private_probe <&4 || \\builtin return 125
       __launcher_private_cwd="$(/usr/bin/printf '%s' "$PWD" | /usr/bin/base64)"
       __launcher_private_path="$(/usr/bin/printf '%s' "$PATH" | /usr/bin/base64)"
       __launcher_private_home="$(/usr/bin/printf '%s' "$HOME" | /usr/bin/base64)"
-      /usr/bin/printf 'I\t%s\t%s\t%s\n' \
-        "$__launcher_private_cwd" "$__launcher_private_path" "$__launcher_private_home" >&3
+      __launcher_private_shell_commands="$(
+        /usr/bin/printf '%s\\0' "${(@k)aliases}" "${(@k)functions}" | /usr/bin/base64
+      )"
+      /usr/bin/printf 'I\t%s\t%s\t%s\t%s\n' \
+        "$__launcher_private_cwd" "$__launcher_private_path" \
+        "$__launcher_private_home" "$__launcher_private_shell_commands" >&3
     }
     """ + "\n"
 
@@ -622,13 +675,19 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
     /// flushing SIGINT input state.
     private static let completionProbeScript = """
     () {
-      builtin local __launcher_private_probe __launcher_private_cwd __launcher_private_path __launcher_private_home
-      IFS= builtin read -r __launcher_private_probe <&4 || builtin return 125
+      \\enable builtin 2>/dev/null
+      \\builtin local __launcher_private_probe __launcher_private_cwd __launcher_private_path __launcher_private_home
+      \\builtin local __launcher_private_shell_commands
+      IFS= \\builtin read -r __launcher_private_probe <&4 || \\builtin return 125
       __launcher_private_cwd="$(/usr/bin/printf '%s' "$PWD" | /usr/bin/base64)"
       __launcher_private_path="$(/usr/bin/printf '%s' "$PATH" | /usr/bin/base64)"
       __launcher_private_home="$(/usr/bin/printf '%s' "$HOME" | /usr/bin/base64)"
-      /usr/bin/printf 'Q\t%s\t%s\t%s\n' \
-        "$__launcher_private_cwd" "$__launcher_private_path" "$__launcher_private_home" >&3
+      __launcher_private_shell_commands="$(
+        /usr/bin/printf '%s\\0' "${(@k)aliases}" "${(@k)functions}" | /usr/bin/base64
+      )"
+      /usr/bin/printf 'Q\t%s\t%s\t%s\t%s\n' \
+        "$__launcher_private_cwd" "$__launcher_private_path" \
+        "$__launcher_private_home" "$__launcher_private_shell_commands" >&3
     }
     """ + "\n"
 
@@ -640,6 +699,17 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
         }
         output.setCancelHandler { _ = Darwin.close(session.masterFD) }
         session.outputSource = output
+
+        // The source starts suspended and is resumed only when a nonblocking
+        // PTY write reaches EAGAIN. This lets accepted raw records drain later
+        // without blocking the caller or ever classifying a partial write as a
+        // rejected submission.
+        let input = DispatchSource.makeWriteSource(fileDescriptor: session.masterFD, queue: queue)
+        input.setEventHandler { [weak self, weak session] in
+            guard let self, let session, self.sessions[session.id] === session else { return }
+            self.drainPendingInput(for: session)
+        }
+        session.inputWriteSource = input
 
         let control = DispatchSource.makeReadSource(fileDescriptor: session.controlFD, queue: queue)
         control.setEventHandler { [weak self, weak session] in
@@ -664,6 +734,74 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
         process.resume()
     }
 
+    private func drainPendingInput(for session: Session) {
+        while !session.pendingInputRecords.isEmpty {
+            var record = session.pendingInputRecords[0]
+            let count = record.data.withUnsafeBytes { buffer -> Int in
+                guard let base = buffer.baseAddress else { return 0 }
+                return Darwin.write(
+                    session.masterFD,
+                    base.advanced(by: record.offset),
+                    buffer.count - record.offset
+                )
+            }
+            if count > 0 {
+                record.offset += count
+                session.pendingInputByteCount -= count
+                if record.offset == record.data.count {
+                    session.pendingInputRecords.removeFirst()
+                } else {
+                    session.pendingInputRecords[0] = record
+                }
+                continue
+            }
+            if count == -1, errno == EINTR { continue }
+            if count == -1, errno == EAGAIN || errno == EWOULDBLOCK {
+                resumeInputWriteSourceIfNeeded(for: session)
+                return
+            }
+
+            let message = count == -1
+                ? String(cString: strerror(errno))
+                : "PTY accepted no input bytes"
+            discardPendingInput(for: session)
+            failControlProtocol(
+                for: session,
+                message: "Shell input transport failed: \(message)"
+            )
+            return
+        }
+        suspendInputWriteSourceIfNeeded(for: session)
+    }
+
+    private func resumeInputWriteSourceIfNeeded(for session: Session) {
+        guard session.inputWriteSourceIsSuspended,
+              let source = session.inputWriteSource else { return }
+        session.inputWriteSourceIsSuspended = false
+        source.resume()
+    }
+
+    private func suspendInputWriteSourceIfNeeded(for session: Session) {
+        guard !session.inputWriteSourceIsSuspended,
+              let source = session.inputWriteSource else { return }
+        session.inputWriteSourceIsSuspended = true
+        source.suspend()
+    }
+
+    private func discardPendingInput(for session: Session) {
+        session.pendingInputRecords.removeAll(keepingCapacity: false)
+        session.pendingInputByteCount = 0
+        suspendInputWriteSourceIfNeeded(for: session)
+    }
+
+    private func cancelInputWriteSource(for session: Session) {
+        guard let source = session.inputWriteSource else { return }
+        if session.inputWriteSourceIsSuspended { source.resume() }
+        session.inputWriteSourceIsSuspended = false
+        source.cancel()
+        session.inputWriteSource = nil
+    }
+
     private func sendInitialization(to session: Session) {
         // The startup command is constant and contains no user data or secrets.
         // It establishes only presentation state and emits one initial frame;
@@ -672,12 +810,18 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
         unsetopt PROMPT_CR PROMPT_SP ZLE 2>/dev/null
         PS1=''; PS2=''
         () {
-          builtin local __launcher_private_cwd __launcher_private_path __launcher_private_home
+          \\enable builtin 2>/dev/null
+          \\builtin local __launcher_private_cwd __launcher_private_path __launcher_private_home
+          \\builtin local __launcher_private_shell_commands
           __launcher_private_cwd="$(/usr/bin/printf '%s' "$PWD" | /usr/bin/base64)"
           __launcher_private_path="$(/usr/bin/printf '%s' "$PATH" | /usr/bin/base64)"
           __launcher_private_home="$(/usr/bin/printf '%s' "$HOME" | /usr/bin/base64)"
-          /usr/bin/printf 'R\\t%s\\t%s\\t%s\\n' \
-            "$__launcher_private_cwd" "$__launcher_private_path" "$__launcher_private_home" >&3
+          __launcher_private_shell_commands="$(
+            /usr/bin/printf '%s\\0' "${(@k)aliases}" "${(@k)functions}" | /usr/bin/base64
+          )"
+          /usr/bin/printf 'R\\t%s\\t%s\\t%s\\t%s\\n' \
+            "$__launcher_private_cwd" "$__launcher_private_path" \
+            "$__launcher_private_home" "$__launcher_private_shell_commands" >&3
         }
         """ + "\n"
         guard writeInternalScript(script, to: session) else {
@@ -720,10 +864,12 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
     private func consumeOutput(from session: Session) {
         var bytes = [UInt8](repeating: 0, count: 16_384)
         var iterations = 0
+        var didReadOutput = false
         while iterations < 16 {
             iterations += 1
             let count = Darwin.read(session.masterFD, &bytes, bytes.count)
             if count > 0 {
+                didReadOutput = true
                 let raw = session.decoder.decode(bytes[..<count])
                 let clean = session.sanitizer.sanitize(raw)
                 if session.phase != .starting { enqueueOutput(clean, for: session) }
@@ -732,6 +878,12 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
             } else {
                 break
             }
+        }
+        if didReadOutput, session.phase == .foreground {
+            // Output commonly accompanies a password/read prompt. Observe ECHO
+            // immediately and restart a short fast-polling burst around it.
+            refreshInputEchoState(for: session)
+            beginForegroundEchoPolling(for: session)
         }
     }
 
@@ -763,6 +915,9 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
             if fields.indices.contains(3), let home = decode64(fields[3]) {
                 session.home = home
             }
+            if fields.indices.contains(4) {
+                updateShellCommandNames(from: fields[4], for: session)
+            }
             // The shell writes its startup/banner/initialization echo before R,
             // but the PTY and control pipe have independent dispatch sources.
             // Drain that already-produced terminal data while still starting.
@@ -791,6 +946,10 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
             if fields.indices.contains(4), let home = decode64(fields[4]) {
                 session.home = home
             }
+            if fields.indices.contains(5) {
+                updateShellCommandNames(from: fields[5], for: session)
+            }
+            discardPendingInput(for: session)
             session.cwd = cwd
             session.path = path
             // POSIX writes command output before the control frame, but the two
@@ -825,6 +984,9 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
             if fields.indices.contains(3), let home = decode64(fields[3]) {
                 session.home = home
             }
+            if fields.indices.contains(4) {
+                updateShellCommandNames(from: fields[4], for: session)
+            }
             completeForeground(
                 session,
                 result: session.pendingForegroundResult ?? .cancelled,
@@ -840,6 +1002,9 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
                   let path = decode64(fields[2]) else { return }
             if fields.indices.contains(3), let home = decode64(fields[3]) {
                 session.home = home
+            }
+            if fields.indices.contains(4) {
+                updateShellCommandNames(from: fields[4], for: session)
             }
             completeForeground(session, result: result, cwd: cwd, path: path)
 
@@ -860,7 +1025,7 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
         }
         session.completionProbePending = true
         let generation = session.interruptPollGeneration
-        queue.asyncAfter(deadline: .now() + 1) { [weak self, weak session] in
+        queue.asyncAfter(deadline: .now() + controlProbeTimeout) { [weak self, weak session] in
             guard let self, let session,
                   self.sessions[session.id] === session,
                   session.phase == .foreground,
@@ -879,6 +1044,7 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
         cwd: String,
         path: String
     ) {
+        discardPendingInput(for: session)
         session.cwd = cwd
         session.path = path
         consumeOutput(from: session)
@@ -913,7 +1079,9 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
         enqueueOutput(session.sanitizer.sanitize(session.decoder.finish()), for: session)
         enqueueOutput(session.sanitizer.finish(), for: session)
         flushOutput(for: session)
+        discardPendingInput(for: session)
         sessions.removeValue(forKey: session.id)
+        cancelInputWriteSource(for: session)
         session.outputSource?.cancel()
         session.controlSource?.cancel()
         session.processSource?.cancel()
@@ -1005,6 +1173,7 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
     }
 
     private func refreshInputEchoState(for session: Session) {
+        onTerminalEchoObservation?()
         guard let attributes = Self.terminalAttributes(for: session.masterFD) else { return }
         let state: ShellInputEchoState = attributes.c_lflag & tcflag_t(ECHO) != 0
             ? .enabled
@@ -1016,17 +1185,31 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
 
     private func beginForegroundEchoPolling(for session: Session) {
         session.echoPollGeneration &+= 1
-        pollForegroundEcho(for: session, generation: session.echoPollGeneration)
+        pollForegroundEcho(for: session, generation: session.echoPollGeneration, attempt: 0)
     }
 
-    private func pollForegroundEcho(for session: Session, generation: Int) {
-        queue.asyncAfter(deadline: .now() + .milliseconds(25)) { [weak self, weak session] in
+    private func pollForegroundEcho(for session: Session, generation: Int, attempt: Int) {
+        let interval: DispatchTimeInterval
+        if attempt < Self.fastEchoPollCount {
+            interval = .milliseconds(25)
+        } else if attempt < Self.fastEchoPollCount + Self.moderateEchoPollCount {
+            interval = .milliseconds(100)
+        } else {
+            // Persisted foreground jobs may live for hours. Retain eventual
+            // observation without paying forty tcgetattr wakeups per second.
+            interval = .seconds(1)
+        }
+        queue.asyncAfter(deadline: .now() + interval) { [weak self, weak session] in
             guard let self, let session,
                   self.sessions[session.id] === session,
                   session.phase == .foreground,
                   session.echoPollGeneration == generation else { return }
             self.refreshInputEchoState(for: session)
-            self.pollForegroundEcho(for: session, generation: generation)
+            self.pollForegroundEcho(
+                for: session,
+                generation: generation,
+                attempt: attempt + 1
+            )
         }
     }
 
@@ -1051,6 +1234,17 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
 
     private func decode64(_ encoded: String) -> String? {
         Data(base64Encoded: encoded).map { String(decoding: $0, as: UTF8.self) }
+    }
+
+    /// Alias and function names are emitted as a base64-encoded NUL-separated
+    /// byte sequence. They are treated only as completion data: neither names
+    /// nor the user's draft are evaluated to discover live shell commands.
+    private func updateShellCommandNames(from encoded: String, for session: Session) {
+        guard let data = Data(base64Encoded: encoded) else { return }
+        let liveNames = data.split(separator: 0).compactMap { bytes in
+            String(data: Data(bytes), encoding: .utf8)
+        }
+        session.shellCommandNames = Self.zshBuiltinCommandNames.union(liveNames)
     }
 
     private func shellQuote(_ text: String) -> String {
@@ -1155,7 +1349,7 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
     }
 
     private func scheduleInterruptProbeTimeout(for session: Session, generation: Int) {
-        queue.asyncAfter(deadline: .now() + 1) { [weak self, weak session] in
+        queue.asyncAfter(deadline: .now() + controlProbeTimeout) { [weak self, weak session] in
             guard let self, let session,
                   self.sessions[session.id] === session,
                   session.phase == .foreground,
@@ -1171,6 +1365,8 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
 
     private func failControlProtocol(for session: Session, message: String) {
         guard sessions[session.id] === session else { return }
+        discardPendingInput(for: session)
+        cancelInputWriteSource(for: session)
         session.closedResultOverride = .failedToStart(message)
         session.closeRequested = true
         session.phase = .closing
@@ -1248,6 +1444,7 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
 
     private struct CompletionTokenContext {
         let start: Int
+        let end: Int
         let token: String
         let openingQuote: Character?
         let isCommand: Bool
@@ -1379,11 +1576,49 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
             index += 1
         }
 
+        // Candidate filtering uses only the prefix through the caret, but an
+        // accepted candidate replaces the complete shell word. Continue the
+        // lexical scan so a mid-token completion never leaves the old suffix
+        // attached to the inserted candidate.
+        var end = cursor
+        var trailingQuote = quote
+        var trailingEscape = escaped
+        while end < utf16.count {
+            let value = utf16[end]
+            if trailingEscape {
+                trailingEscape = false
+                end += 1
+                continue
+            }
+            if value == 0x5C, trailingQuote != 0x27 {
+                trailingEscape = true
+                end += 1
+                continue
+            }
+            if let activeQuote = trailingQuote {
+                if value == activeQuote { trailingQuote = nil }
+                end += 1
+                continue
+            }
+            if value == 0x27 || value == 0x22 {
+                trailingQuote = value
+                end += 1
+                continue
+            }
+            if value == 0x20 || value == 0x09 || value == 0x0A || value == 0x0D
+                || value == 0x3B || value == 0x7C || value == 0x26
+                || value == 0x28 || value == 0x29 || value == 0x3C || value == 0x3E {
+                break
+            }
+            end += 1
+        }
+
         let token = String(decoding: utf16[start..<cursor], as: UTF16.self)
         let openingQuote = token.first.flatMap { $0 == "'" || $0 == "\"" ? $0 : nil }
         let currentIsAssignment = expectsCommand && isAssignmentWord(utf16[start..<cursor])
         return CompletionTokenContext(
             start: start,
+            end: end,
             token: token,
             openingQuote: openingQuote,
             isCommand: expectsCommand && !expectsRedirectionTarget && !currentIsAssignment
@@ -1465,7 +1700,7 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
         }
         return ShellCompletionResult(
             requestID: requestID,
-            replacementRange: start..<cursor,
+            replacementRange: start..<context.end,
             candidates: candidates.sorted()
         )
     }
