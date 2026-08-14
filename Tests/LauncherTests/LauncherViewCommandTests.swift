@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import XCTest
 @testable import Launcher
 
@@ -11,6 +12,14 @@ final class LauncherViewCommandTests: XCTestCase {
         XCTAssertEqual(
             LauncherKeyCommand(textCommandSelector: #selector(NSResponder.moveDown(_:))),
             .moveDown
+        )
+        XCTAssertEqual(
+            LauncherKeyCommand(textCommandSelector: #selector(NSResponder.insertTab(_:))),
+            .focusNext
+        )
+        XCTAssertEqual(
+            LauncherKeyCommand(textCommandSelector: #selector(NSResponder.insertBacktab(_:))),
+            .focusPrevious
         )
         XCTAssertNil(
             LauncherKeyCommand(textCommandSelector: #selector(NSResponder.moveLeft(_:)))
@@ -74,44 +83,39 @@ final class LauncherViewCommandTests: XCTestCase {
         XCTAssertEqual(received, .interruptRun)
     }
 
-    func testTabRoutesToTheContextualFocusOrCompletionCommand() throws {
-        let field = KeyHandlingTextField(frame: .zero)
+    func testLiveFieldEditorTabSelectorsCarryTheUTF16Caret() {
+        var text = "echo 😀 /usr/bin/pri suffix"
         var received: [LauncherKeyCommand] = []
-        field.onCommand = { received.append($0) }
-
-        let tab = try XCTUnwrap(
-            NSEvent.keyEvent(
-                with: .keyDown,
-                location: .zero,
-                modifierFlags: [],
-                timestamp: 0,
-                windowNumber: 0,
-                context: nil,
-                characters: "\t",
-                charactersIgnoringModifiers: "\t",
-                isARepeat: false,
-                keyCode: 48
-            )
+        let representable = LauncherSearchField(
+            text: Binding(get: { text }, set: { text = $0 }),
+            focusToken: 0,
+            onCommand: { received.append($0) }
         )
-        let backTab = try XCTUnwrap(
-            NSEvent.keyEvent(
-                with: .keyDown,
-                location: .zero,
-                modifierFlags: [.shift],
-                timestamp: 0,
-                windowNumber: 0,
-                context: nil,
-                characters: "\u{19}",
-                charactersIgnoringModifiers: "\u{19}",
-                isARepeat: false,
-                keyCode: 48
-            )
+        let coordinator = representable.makeCoordinator()
+        let field = KeyHandlingTextField(frame: .zero)
+        let editor = NSTextView(frame: .zero)
+        editor.string = text
+        let caret = ("echo 😀 /usr/bin/pri" as NSString).length
+        editor.setSelectedRange(NSRange(location: caret, length: 0))
+
+        XCTAssertTrue(coordinator.control(
+            field,
+            textView: editor,
+            doCommandBy: #selector(NSResponder.insertTab(_:))
+        ))
+        XCTAssertTrue(coordinator.control(
+            field,
+            textView: editor,
+            doCommandBy: #selector(NSResponder.insertBacktab(_:))
+        ))
+
+        XCTAssertEqual(
+            received,
+            [
+                .completeShell(backward: false, cursorUTF16: caret),
+                .completeShell(backward: true, cursorUTF16: caret),
+            ]
         )
-
-        field.keyDown(with: tab)
-        field.keyDown(with: backTab)
-
-        XCTAssertEqual(received, [.focusNext, .focusPrevious])
     }
 
     func testProgrammaticCompletionReplacesTheLiveFieldEditorAndMovesTheCaret() throws {
@@ -138,11 +142,11 @@ final class LauncherViewCommandTests: XCTestCase {
     func testShellTabRequestsThenCyclesCompletionCandidates() {
         XCTAssertEqual(
             ShellCompletionKeyboardAction.resolve(.focusNext, isShellMode: true, hasCandidates: false),
-            .request(backward: false)
+            .request(backward: false, cursorUTF16: nil)
         )
         XCTAssertEqual(
             ShellCompletionKeyboardAction.resolve(.focusPrevious, isShellMode: true, hasCandidates: false),
-            .request(backward: true)
+            .request(backward: true, cursorUTF16: nil)
         )
         XCTAssertEqual(
             ShellCompletionKeyboardAction.resolve(.focusNext, isShellMode: true, hasCandidates: true),
@@ -151,6 +155,14 @@ final class LauncherViewCommandTests: XCTestCase {
         XCTAssertEqual(
             ShellCompletionKeyboardAction.resolve(.focusPrevious, isShellMode: true, hasCandidates: true),
             .move(offset: -1)
+        )
+        XCTAssertEqual(
+            ShellCompletionKeyboardAction.resolve(
+                .completeShell(backward: false, cursorUTF16: 7),
+                isShellMode: true,
+                hasCandidates: false
+            ),
+            .request(backward: false, cursorUTF16: 7)
         )
     }
 
@@ -181,6 +193,7 @@ final class LauncherViewCommandTests: XCTestCase {
         for command in [
             LauncherKeyCommand.focusNext,
             .focusPrevious,
+            .completeShell(backward: false, cursorUTF16: 3),
             .moveDown,
             .moveUp,
             .submit,

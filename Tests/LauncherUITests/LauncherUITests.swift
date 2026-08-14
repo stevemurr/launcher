@@ -220,7 +220,9 @@ final class LauncherUITests: XCTestCase {
     func testShellTabCompletionShowsCandidatesAndReturnAcceptsWithoutRunning() {
         let search = app.textFields["launcher.search"]
         search.click()
-        let partialCommand = "/usr/bin/print"
+        let prefix = "echo 😀 /usr/bin/print"
+        let suffix = " --suffix"
+        let draft = prefix + suffix
         search.typeText("> /usr/bin/true")
         search.typeKey(.return, modifierFlags: [])
 
@@ -231,10 +233,13 @@ final class LauncherUITests: XCTestCase {
         )
         XCTAssertEqual(XCTWaiter.wait(for: [sessionReady], timeout: 6), .completed)
         XCTAssertEqual(search.value as? String, "")
-        app.typeText(partialCommand)
+        app.typeText(draft)
+        for _ in 0..<(suffix as NSString).length {
+            search.typeKey(.leftArrow, modifierFlags: [])
+        }
 
         let triggerConsumed = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "value == %@", partialCommand),
+            predicate: NSPredicate(format: "value == %@", draft),
             object: search
         )
         XCTAssertEqual(XCTWaiter.wait(for: [triggerConsumed], timeout: 3), .completed)
@@ -243,12 +248,19 @@ final class LauncherUITests: XCTestCase {
         let palette = app.descendants(matching: .any)["shell.completions"].firstMatch
         XCTAssertTrue(palette.waitForExistence(timeout: 5))
         XCTAssertTrue(app.descendants(matching: .any)["shell.completion.0"].firstMatch.exists)
+        search.typeKey(.tab, modifierFlags: [.shift])
 
         // While candidates are open Return accepts the selected replacement;
-        // it must not also submit the newly completed command.
+        // it must not also submit the newly completed command, and the suffix
+        // after the live field-editor caret must remain untouched.
         search.typeKey(.return, modifierFlags: [])
         let accepted = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "value BEGINSWITH %@ AND value != %@", partialCommand, partialCommand),
+            predicate: NSPredicate(
+                format: "value BEGINSWITH %@ AND value ENDSWITH %@ AND value != %@",
+                prefix,
+                suffix,
+                draft
+            ),
             object: search
         )
         XCTAssertEqual(XCTWaiter.wait(for: [accepted], timeout: 3), .completed)

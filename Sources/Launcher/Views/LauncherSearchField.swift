@@ -10,6 +10,7 @@ enum LauncherKeyCommand: Equatable {
     case settings
     case focusNext
     case focusPrevious
+    case completeShell(backward: Bool, cursorUTF16: Int)
     case toggleRunPalette
     case toggleOutputPane
     case editScript
@@ -31,6 +32,10 @@ enum LauncherKeyCommand: Equatable {
             self = .moveUp
         case #selector(NSResponder.moveDown(_:)):
             self = .moveDown
+        case #selector(NSResponder.insertTab(_:)):
+            self = .focusNext
+        case #selector(NSResponder.insertBacktab(_:)):
+            self = .focusPrevious
         default:
             return nil
         }
@@ -43,6 +48,8 @@ struct LauncherSearchField: NSViewRepresentable {
     var isFocusTarget = true
     var placeholder = "Search applications and settings"
     var accessibilityLabel = "Search applications and settings"
+    var requestedCaretUTF16: Int? = nil
+    var caretRequestToken = 0
     var onFocus: (() -> Void)?
     let onCommand: (LauncherKeyCommand) -> Void
 
@@ -83,6 +90,15 @@ struct LauncherSearchField: NSViewRepresentable {
         field.onFocus = onFocus
         context.coordinator.parent = self
 
+        if context.coordinator.lastCaretRequestToken != caretRequestToken {
+            context.coordinator.lastCaretRequestToken = caretRequestToken
+            if let requestedCaretUTF16 {
+                DispatchQueue.main.async { [weak field] in
+                    field?.placeCaret(atUTF16: requestedCaretUTF16)
+                }
+            }
+        }
+
         guard context.coordinator.lastFocusToken != focusToken else { return }
         context.coordinator.lastFocusToken = focusToken
         guard isFocusTarget else { return }
@@ -95,9 +111,11 @@ struct LauncherSearchField: NSViewRepresentable {
     final class Coordinator: NSObject, NSTextFieldDelegate {
         var parent: LauncherSearchField
         var lastFocusToken = -1
+        var lastCaretRequestToken: Int
 
         init(parent: LauncherSearchField) {
             self.parent = parent
+            lastCaretRequestToken = -1
         }
 
         func controlTextDidChange(_ notification: Notification) {
@@ -117,8 +135,23 @@ struct LauncherSearchField: NSViewRepresentable {
         // (caret movement) before they can reach the text field's key
         // handling, so intercept them here and drive the list selection.
         func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
-            guard let command = LauncherKeyCommand(textCommandSelector: commandSelector) else { return false }
-            parent.onCommand(command)
+            let backward: Bool
+            switch commandSelector {
+            case #selector(NSResponder.insertTab(_:)):
+                backward = false
+            case #selector(NSResponder.insertBacktab(_:)):
+                backward = true
+            default:
+                guard let command = LauncherKeyCommand(textCommandSelector: commandSelector) else {
+                    return false
+                }
+                parent.onCommand(command)
+                return true
+            }
+            parent.onCommand(.completeShell(
+                backward: backward,
+                cursorUTF16: textView.selectedRange().location
+            ))
             return true
         }
     }
@@ -157,6 +190,12 @@ final class KeyHandlingTextField: NSTextField {
         editor.setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
     }
 
+    func placeCaret(atUTF16 location: Int) {
+        guard let editor = currentEditor() as? NSTextView else { return }
+        let clamped = max(0, min(location, (editor.string as NSString).length))
+        editor.setSelectedRange(NSRange(location: clamped, length: 0))
+    }
+
     private func handle(_ event: NSEvent) -> Bool {
         let characters = event.charactersIgnoringModifiers?.lowercased()
         let command: LauncherKeyCommand
@@ -192,7 +231,13 @@ final class KeyHandlingTextField: NSTextField {
             case 126: command = .moveUp
             case 36, 76: command = event.modifierFlags.contains(.command) ? .openWith : .submit
             case 53: command = .escape
-            case 48: command = event.modifierFlags.contains(.shift) ? .focusPrevious : .focusNext
+            case 48:
+                let cursor = (currentEditor() as? NSTextView)?.selectedRange().location
+                    ?? (stringValue as NSString).length
+                command = .completeShell(
+                    backward: event.modifierFlags.contains(.shift),
+                    cursorUTF16: cursor
+                )
             default: return false
             }
         }
