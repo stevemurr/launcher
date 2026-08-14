@@ -192,11 +192,18 @@ private struct LauncherSearchView: View {
                 text: $model.query,
                 focusToken: model.focusToken,
                 isFocusTarget: model.focusTarget == .search,
+                isSecureEntry: model.isShellInputSecure,
                 placeholder: model.searchFieldPlaceholder,
                 accessibilityLabel: model.searchFieldAccessibilityLabel,
                 requestedCaretUTF16: model.shellCompletionCaretUTF16,
                 caretRequestToken: model.shellCompletionCaretRequestToken,
                 onFocus: { model.noteFocus(.search) },
+                onSelectionChange: {
+                    model.noteShellSelectionChanged(
+                        locationUTF16: $0.location,
+                        lengthUTF16: $0.length
+                    )
+                },
                 onCommand: handle
             )
             .frame(height: 32)
@@ -485,11 +492,21 @@ private struct LauncherSearchView: View {
 
             Spacer()
 
-            Text(shellFooterStatus)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(Color.secondary)
-                .accessibilityIdentifier("shell.footer.status")
-                .accessibilityHidden(true)
+            if let inputError = model.shellInputError {
+                Text(inputError)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.red)
+                    .lineLimit(1)
+                    .help(inputError)
+                    .accessibilityIdentifier("shell.input.error")
+                    .accessibilityLabel("Shell input error: \(inputError)")
+            } else {
+                Text(shellFooterStatus)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.secondary)
+                    .accessibilityIdentifier("shell.footer.status")
+                    .accessibilityHidden(true)
+            }
 
             Rectangle()
                 .fill(Color.launcherSeparator)

@@ -161,6 +161,7 @@ private final class StubPersistentShellSessionManager: PersistentShellSessionMan
     var acceptsSessionStarts = true
     var acceptsCommands = true
     var acceptsInput = true
+    var inputSubmissionResult: ShellInputSubmissionResult?
     var automaticallyClosesOnRequest = true
     private(set) var startedSessionIDs: [ShellSessionID] = []
     private(set) var submittedCommands: [(ShellSessionID, String)] = []
@@ -169,6 +170,7 @@ private final class StubPersistentShellSessionManager: PersistentShellSessionMan
     private(set) var completionRequests: [CompletionRequest] = []
     private(set) var closedSessionIDs: [ShellSessionID] = []
     private(set) var immediateTerminationCount = 0
+    private var inputEchoStates: [ShellSessionID: ShellInputEchoState] = [:]
 
     var activeSessionIDs: Set<ShellSessionID> { Set(sessions.keys) }
 
@@ -195,9 +197,23 @@ private final class StubPersistentShellSessionManager: PersistentShellSessionMan
 
     @discardableResult
     func sendInputLine(_ input: String, to id: ShellSessionID) -> Bool {
-        guard acceptsInput, sessions[id] != nil else { return false }
-        sentInputLines.append((id, input))
-        return true
+        submitInputLine(input, to: id) == .accepted
+    }
+
+    @discardableResult
+    func submitInputLine(
+        _ input: String,
+        to id: ShellSessionID
+    ) -> ShellInputSubmissionResult {
+        guard sessions[id] != nil else { return .rejected(.sessionNotForeground) }
+        let result = inputSubmissionResult
+            ?? (acceptsInput ? .accepted : .rejected(.transportFailed))
+        if result == .accepted { sentInputLines.append((id, input)) }
+        return result
+    }
+
+    func inputEchoState(for id: ShellSessionID) -> ShellInputEchoState? {
+        inputEchoStates[id]
     }
 
     func interruptForeground(in id: ShellSessionID) {
@@ -231,6 +247,7 @@ private final class StubPersistentShellSessionManager: PersistentShellSessionMan
 
     func finishClose(_ id: ShellSessionID, result: ScriptRunResult = .success) {
         guard let session = sessions.removeValue(forKey: id) else { return }
+        inputEchoStates[id] = nil
         session.onEvent(id, .closed(result))
     }
 
@@ -244,6 +261,11 @@ private final class StubPersistentShellSessionManager: PersistentShellSessionMan
 
     func emit(_ id: ShellSessionID, _ output: String) {
         sessions[id]?.onOutput(id, output)
+    }
+
+    func setInputEchoState(_ state: ShellInputEchoState, for id: ShellSessionID) {
+        inputEchoStates[id] = state
+        sessions[id]?.onEvent(id, .inputEchoStateChanged(state))
     }
 
     func finishForeground(
@@ -418,6 +440,89 @@ final class LauncherModelShellTests: XCTestCase {
         XCTAssertEqual(model.displayedRunTitle, "Shell 1")
     }
 
+    func testAuthoritativeEchoStateControlsSecureInputAndNeverRevealsAnUnsentSecret() throws {
+        let manager = StubPersistentShellSessionManager()
+        let model = makeModel(shellSessionManager: manager)
+        enterShellMode(model, command: "claude")
+        model.handleSubmit()
+        let id = try XCTUnwrap(manager.startedSessionIDs.first)
+
+        manager.setInputEchoState(.disabled, for: id)
+        XCTAssertTrue(model.isShellInputSecure)
+        XCTAssertEqual(model.searchFieldAccessibilityLabel, "Secure shell input")
+        XCTAssertEqual(model.searchFieldPlaceholder, "Secure input to Shell 1…")
+
+        model.query = "partial-secret"
+        manager.setInputEchoState(.enabled, for: id)
+
+        XCTAssertEqual(model.query, "", "a secure draft must be cleared before plaintext rendering resumes")
+        XCTAssertFalse(model.isShellInputSecure)
+        XCTAssertEqual(model.searchFieldAccessibilityLabel, "Shell standard input")
+
+        manager.setInputEchoState(.disabled, for: id)
+        model.query = "another-partial-secret"
+        manager.finishForeground(id)
+
+        XCTAssertEqual(model.query, "", "foreground exit must not reveal an unsent secure draft")
+        XCTAssertFalse(model.isShellInputSecure)
+        XCTAssertEqual(model.shellInputMode, .idle)
+    }
+
+    func testTypedForegroundInputRejectionsAreVisibleAndPreserveTheDraft() throws {
+        let manager = StubPersistentShellSessionManager()
+        let model = makeModel(shellSessionManager: manager)
+        enterShellMode(model, command: "claude")
+        model.handleSubmit()
+
+        let cases: [(ShellInputRejectionReason, String)] = [
+            (.sessionNotForeground, "No foreground process is accepting input."),
+            (.containsNUL, "Shell input cannot contain a null character."),
+            (.containsLineBreak, "Send one line at a time."),
+            (.canonicalLineTooLong(maximumBytes: 511), "Input is too long for this prompt (maximum 511 bytes)."),
+            (.nonCanonicalLineTooLong(maximumBytes: 65_536), "Input exceeds the 65536-byte shell input limit."),
+            (.terminalStateUnavailable, "Shell input state is unavailable. Try again."),
+            (.transportFailed, "Could not send input to the shell."),
+        ]
+
+        for (offset, testCase) in cases.enumerated() {
+            let draft = "unsent input \(offset)"
+            model.query = draft
+            manager.inputSubmissionResult = .rejected(testCase.0)
+            model.handleSubmit()
+
+            XCTAssertEqual(model.query, draft)
+            XCTAssertEqual(model.shellInputError, testCase.1)
+        }
+
+        manager.inputSubmissionResult = .accepted
+        model.handleSubmit()
+        XCTAssertEqual(manager.sentInputLines.last?.1, "unsent input \(cases.count - 1)")
+        XCTAssertEqual(model.query, "")
+        XCTAssertNil(model.shellInputError)
+    }
+
+    func testSecondSubmitDuringStartupCannotOverwriteTheFirstQueuedCommand() throws {
+        let manager = StubPersistentShellSessionManager()
+        manager.automaticallyBecomesReady = false
+        let model = makeModel(shellSessionManager: manager)
+        enterShellMode(model, command: "first command")
+        model.handleSubmit()
+        let id = try XCTUnwrap(manager.startedSessionIDs.first)
+
+        model.query = "second command"
+        model.handleSubmit()
+
+        XCTAssertEqual(model.query, "second command")
+        XCTAssertEqual(
+            model.shellInputError,
+            "The shell is still starting. Its first command is already queued."
+        )
+
+        manager.ready(id)
+        XCTAssertEqual(manager.submittedCommands.map(\.1), ["first command"])
+        XCTAssertEqual(model.query, "second command")
+    }
+
     func testForegroundCanBeInterruptedRepeatedlyAndReturnsToReadyWithUpdatedDirectory() throws {
         let manager = StubPersistentShellSessionManager()
         let model = makeModel(shellSessionManager: manager)
@@ -475,6 +580,40 @@ final class LauncherModelShellTests: XCTestCase {
         XCTAssertTrue(model.shellCompletions.isEmpty)
         XCTAssertEqual(manager.startedSessionIDs, [id])
         XCTAssertTrue(manager.submittedCommands.isEmpty, "accepting completion must not execute it")
+    }
+
+    func testMovingCaretInvalidatesOpenAndInFlightShellCompletions() throws {
+        let manager = StubPersistentShellSessionManager()
+        let model = makeModel(shellSessionManager: manager)
+        let input = "echo /usr/bin/pri suffix"
+        let cursor = ("echo /usr/bin/pri" as NSString).length
+        enterShellMode(model, command: input)
+
+        model.requestShellCompletion(cursorUTF16: cursor)
+        let firstRequest = try XCTUnwrap(manager.completionRequests.first)
+        model.noteShellSelectionChanged(locationUTF16: cursor - 2, lengthUTF16: 0)
+        firstRequest.completion(
+            firstRequest.sessionID,
+            ShellCompletionResult(
+                requestID: firstRequest.requestID,
+                replacementRange: 5..<cursor,
+                candidates: ["/usr/bin/printf"]
+            )
+        )
+        XCTAssertTrue(model.shellCompletions.isEmpty, "a moved caret invalidates in-flight delivery")
+
+        model.requestShellCompletion(cursorUTF16: cursor)
+        manager.deliverCompletion(
+            at: 1,
+            replacementRange: 5..<cursor,
+            candidates: ["/usr/bin/printf"]
+        )
+        XCTAssertEqual(model.shellCompletions, ["/usr/bin/printf"])
+
+        model.noteShellSelectionChanged(locationUTF16: cursor, lengthUTF16: 2)
+        model.acceptShellCompletion()
+        XCTAssertEqual(model.query, input, "Return cannot accept candidates anchored to an old caret")
+        XCTAssertTrue(model.shellCompletions.isEmpty)
     }
 
     func testStaleCompletionCannotReplaceNewerDraft() {

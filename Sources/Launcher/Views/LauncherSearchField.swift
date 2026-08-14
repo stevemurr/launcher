@@ -52,6 +52,7 @@ struct LauncherSearchField: NSViewRepresentable {
     var requestedCaretUTF16: Int? = nil
     var caretRequestToken = 0
     var onFocus: (() -> Void)?
+    var onSelectionChange: ((NSRange) -> Void)?
     let onCommand: (LauncherKeyCommand) -> Void
 
     static func contextualAccessibilityLabel(for directory: URL?) -> String {
@@ -80,18 +81,17 @@ struct LauncherSearchField: NSViewRepresentable {
         field.identifier = NSUserInterfaceItemIdentifier("launcher.search")
         field.setAccessibilityIdentifier("launcher.search")
         field.setAccessibilityLabel(accessibilityLabel)
-        field.setSecureEntry(isSecureEntry)
+        field.reconcilePresentation(text: text, isSecureEntry: isSecureEntry)
         return field
     }
 
     func updateNSView(_ field: KeyHandlingTextField, context: Context) {
-        field.setSecureEntry(isSecureEntry)
-        field.replaceTextIfNeeded(text)
+        context.coordinator.parent = self
+        field.reconcilePresentation(text: text, isSecureEntry: isSecureEntry)
         if field.placeholderString != placeholder { field.placeholderString = placeholder }
         field.setAccessibilityLabel(accessibilityLabel)
         field.onCommand = onCommand
         field.onFocus = onFocus
-        context.coordinator.parent = self
 
         if context.coordinator.lastCaretRequestToken != caretRequestToken {
             context.coordinator.lastCaretRequestToken = caretRequestToken
@@ -115,10 +115,16 @@ struct LauncherSearchField: NSViewRepresentable {
         var parent: LauncherSearchField
         var lastFocusToken = -1
         var lastCaretRequestToken: Int
+        private weak var observedEditor: NSTextView?
 
         init(parent: LauncherSearchField) {
             self.parent = parent
             lastCaretRequestToken = -1
+            super.init()
+        }
+
+        deinit {
+            stopObservingSelectionChanges()
         }
 
         func controlTextDidChange(_ notification: Notification) {
@@ -132,6 +138,44 @@ struct LauncherSearchField: NSViewRepresentable {
             // the stale trigger. Reconcile immediately and leave the caret at
             // the end of the model-owned value.
             field.replaceTextIfNeeded(parent.text)
+        }
+
+        func controlTextDidBeginEditing(_ notification: Notification) {
+            guard let field = notification.object as? KeyHandlingTextField,
+                  let editor = field.currentEditor() as? NSTextView else { return }
+            observeSelectionChanges(in: editor)
+        }
+
+        func controlTextDidEndEditing(_ notification: Notification) {
+            stopObservingSelectionChanges()
+        }
+
+        private func observeSelectionChanges(in editor: NSTextView) {
+            guard observedEditor !== editor else { return }
+            stopObservingSelectionChanges()
+            observedEditor = editor
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(selectionDidChange(_:)),
+                name: NSTextView.didChangeSelectionNotification,
+                object: editor
+            )
+        }
+
+        private func stopObservingSelectionChanges() {
+            if let observedEditor {
+                NotificationCenter.default.removeObserver(
+                    self,
+                    name: NSTextView.didChangeSelectionNotification,
+                    object: observedEditor
+                )
+            }
+            observedEditor = nil
+        }
+
+        @objc private func selectionDidChange(_ notification: Notification) {
+            guard let editor = notification.object as? NSTextView else { return }
+            parent.onSelectionChange?(editor.selectedRange())
         }
 
         // While editing, plain arrow keys are consumed by the field editor
@@ -163,6 +207,9 @@ struct LauncherSearchField: NSViewRepresentable {
 final class KeyHandlingTextField: NSSecureTextField {
     var onCommand: ((LauncherKeyCommand) -> Void)?
     var onFocus: (() -> Void)?
+    /// Test seam for asserting that secure -> plain transitions never carry a
+    /// discarded password into the replacement plaintext cell.
+    var onWillInstallCell: ((_ secure: Bool, _ text: String) -> Void)?
     private var suppressFocusCallback = false
 
     override init(frame frameRect: NSRect) {
@@ -210,6 +257,20 @@ final class KeyHandlingTextField: NSSecureTextField {
         editor.setSelectedRange(NSRange(location: clamped, length: 0))
     }
 
+    /// Applies text and secure presentation in a direction-sensitive order.
+    /// On secure -> plain transitions, clear/reconcile the live secure editor
+    /// before AppKit creates a normal editor so a discarded password is never
+    /// copied through a plaintext cell, even for one update cycle.
+    func reconcilePresentation(text: String, isSecureEntry: Bool) {
+        if isSecureEntry {
+            setSecureEntry(true)
+            replaceTextIfNeeded(text)
+        } else {
+            replaceTextIfNeeded(text)
+            setSecureEntry(false)
+        }
+    }
+
     /// Changes how AppKit presents this field without replacing the control.
     /// AppKit supplies a secure field editor when needed; text, selection, and
     /// keyboard focus are transferred to it without notifying the focus owner.
@@ -240,6 +301,7 @@ final class KeyHandlingTextField: NSSecureTextField {
             : NSTextFieldCell(textCell: liveText)
         replacementCell.copyPresentation(from: previousCell)
         replacementCell.stringValue = liveText
+        onWillInstallCell?(isSecureEntry, liveText)
         cell = replacementCell
         stringValue = liveText
 

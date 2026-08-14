@@ -46,6 +46,9 @@ struct ShellRunState: Equatable {
     var output: String
     var didTruncateOutput: Bool
     var workingDirectory: String
+    /// Most recent terminal-driver ECHO observation for this session. `nil`
+    /// means the PTY has not reported an authoritative state yet.
+    var inputEchoState: ShellInputEchoState? = nil
 
     var lastResult: ScriptRunResult? {
         guard case let .finished(result) = phase else { return nil }
@@ -307,6 +310,7 @@ final class LauncherModel: ObservableObject {
                 resetShellHistoryNavigation()
             }
             if isShellMode {
+                shellInputError = nil
                 dismissShellCompletion()
             }
             refreshResults(resetSelection: true)
@@ -342,6 +346,7 @@ final class LauncherModel: ObservableObject {
     @Published private(set) var shellCompletionSelectionIndex = 0
     @Published private(set) var shellCompletionCaretUTF16: Int?
     @Published private(set) var shellCompletionCaretRequestToken = 0
+    @Published private(set) var shellInputError: String?
     @Published private(set) var panelPresentation: LauncherPanelPresentation = .compact
     @Published var isRunPalettePresented = false
     @Published private(set) var pendingRun: PendingScriptRun?
@@ -408,6 +413,7 @@ final class LauncherModel: ObservableObject {
     private var isConsumingShellTrigger = false
     private var isAwaitingShellSeparator = false
     private var activeShellCompletionRequestID: ShellCompletionRequestID?
+    private var shellCompletionRequestCaretUTF16: Int?
     private var shellCompletionReplacementRange: Range<Int>?
     private var shellCompletionSelectsLastCandidate = false
     private var pendingShellCommands: [ShellSessionID: String] = [:]
@@ -483,6 +489,13 @@ final class LauncherModel: ObservableObject {
         shellRun?.sessionPhase == .foreground ? .foreground : .idle
     }
 
+    /// Secure rendering follows the PTY's authoritative ECHO bit. An unknown
+    /// state intentionally remains a normal editor so we never guess about
+    /// terminal state during startup or ordinary commands.
+    var isShellInputSecure: Bool {
+        shellInputMode == .foreground && shellRun?.inputEchoState == .disabled
+    }
+
     var shellWorkingDirectoryDisplay: String {
         guard let directory = shellRun?.workingDirectory, !directory.isEmpty else { return "~" }
         return displayShellDirectory(directory)
@@ -553,6 +566,7 @@ final class LauncherModel: ObservableObject {
     var searchFieldPlaceholder: String {
         if isShellMode {
             if shellInputMode == .foreground {
+                if isShellInputSecure { return "Secure input to \(shellSessionDisplayName)…" }
                 return "Send input to \(shellSessionDisplayName)…"
             }
             return "Enter a shell command…"
@@ -564,6 +578,7 @@ final class LauncherModel: ObservableObject {
 
     var searchFieldAccessibilityLabel: String {
         if isShellMode {
+            if isShellInputSecure { return "Secure shell input" }
             return shellInputMode == .foreground ? "Shell standard input" : "Shell command"
         }
         return LauncherSearchField.contextualAccessibilityLabel(for: browseDirectoryForAccessibility)
@@ -1447,6 +1462,7 @@ final class LauncherModel: ObservableObject {
         isRunPalettePresented = false
         selectedShellSessionID = nil
         dismissShellCompletion()
+        shellInputError = nil
         isShellMode = true
         // Normal typing reports `>` and its following space as separate AppKit
         // edits. Remember the bare trigger so the next edit can consume that
@@ -1471,6 +1487,7 @@ final class LauncherModel: ObservableObject {
         // a hidden shell; selecting its result establishes the selection again.
         selectedShellSessionID = nil
         dismissShellCompletion()
+        shellInputError = nil
         isShellMode = false
         isAwaitingShellSeparator = false
         resetShellHistoryNavigation()
@@ -1503,6 +1520,7 @@ final class LauncherModel: ObservableObject {
         isAwaitingShellSeparator = false
         resetShellHistoryNavigation()
         dismissShellCompletion()
+        shellInputError = nil
 
         isConsumingShellTrigger = true
         query = ""
@@ -1516,9 +1534,12 @@ final class LauncherModel: ObservableObject {
 
         if shellInputMode == .foreground {
             guard let id = selectedShellSessionID else { return }
-            if shellSessionManager.sendInputLine(input, to: id) {
+            switch shellSessionManager.submitInputLine(input, to: id) {
+            case .accepted:
+                shellInputError = nil
                 clearShellDraft()
-            } else {
+            case let .rejected(reason):
+                shellInputError = shellInputErrorMessage(for: reason)
                 NSSound.beep()
             }
             return
@@ -1540,7 +1561,12 @@ final class LauncherModel: ObservableObject {
             case .ready:
                 _ = submitShellCommand(input, to: run.id)
             case .starting:
-                pendingShellCommands[run.id] = input
+                if pendingShellCommands[run.id] == nil {
+                    pendingShellCommands[run.id] = input
+                } else {
+                    shellInputError = "The shell is still starting. Its first command is already queued."
+                    NSSound.beep()
+                }
             case .foreground:
                 // `shellInputMode` handled this above. Keep the draft intact if
                 // an event races the published state.
@@ -1550,6 +1576,25 @@ final class LauncherModel: ObservableObject {
             }
         } else {
             _ = startShellSession(pendingCommand: input)
+        }
+    }
+
+    private func shellInputErrorMessage(for reason: ShellInputRejectionReason) -> String {
+        switch reason {
+        case .sessionNotForeground:
+            return "No foreground process is accepting input."
+        case .containsNUL:
+            return "Shell input cannot contain a null character."
+        case .containsLineBreak:
+            return "Send one line at a time."
+        case let .canonicalLineTooLong(maximumBytes):
+            return "Input is too long for this prompt (maximum \(maximumBytes) bytes)."
+        case let .nonCanonicalLineTooLong(maximumBytes):
+            return "Input exceeds the \(maximumBytes)-byte shell input limit."
+        case .terminalStateUnavailable:
+            return "Shell input state is unavailable. Try again."
+        case .transportFailed:
+            return "Could not send input to the shell."
         }
     }
 
@@ -1635,6 +1680,7 @@ final class LauncherModel: ObservableObject {
         appendShellHistory(command)
         shellHistoryIndex = shellHistory.count
         shellHistoryDraft = ""
+        shellInputError = nil
         // A slow first shell startup leaves the submitted text visible until
         // Ready. If the user has already replaced it with their next draft,
         // do not erase that newer input when the pending command is accepted.
@@ -1650,6 +1696,16 @@ final class LauncherModel: ObservableObject {
         resetShellHistoryNavigation()
         dismissShellCompletion()
         if focusTarget != .search { focusTarget = .search }
+    }
+
+    /// Never let an unsent password become ordinary visible/searchable text
+    /// when the terminal turns echo back on or the foreground process exits.
+    private func clearSecureShellDraftIfNeeded(for id: ShellSessionID, run: ShellRunState) {
+        guard isShellMode,
+              selectedShellSessionID == id,
+              run.inputEchoState == .disabled,
+              !query.isEmpty else { return }
+        clearShellDraft()
     }
 
     private func appendShellOutput(_ chunk: String, id: ShellSessionID) {
@@ -1671,16 +1727,18 @@ final class LauncherModel: ObservableObject {
             guard case .closed = event else { return }
         }
         switch event {
-        case .inputEchoStateChanged:
-            // The secure-editor integration consumes this protocol event in the
-            // UI branch. Keep lifecycle behavior unchanged in this isolated PTY
-            // reliability change.
-            break
+        case let .inputEchoStateChanged(state):
+            if state == .enabled { clearSecureShellDraftIfNeeded(for: id, run: run) }
+            run.inputEchoState = state
+            shellSessions[index] = run
 
         case let .ready(cwd):
+            clearSecureShellDraftIfNeeded(for: id, run: run)
             run.sessionPhase = .ready
             run.workingDirectory = cwd
+            run.inputEchoState = shellSessionManager.inputEchoState(for: id)
             shellSessions[index] = run
+            if selectedShellSessionID == id { shellInputError = nil }
             refreshBackgroundShellResultsIfVisible()
             if let command = pendingShellCommands.removeValue(forKey: id) {
                 _ = submitShellCommand(command, to: id)
@@ -1692,11 +1750,14 @@ final class LauncherModel: ObservableObject {
             run.command = command
             run.phase = .running
             run.sessionPhase = .foreground
+            run.inputEchoState = shellSessionManager.inputEchoState(for: id)
             shellSessions[index] = run
+            if selectedShellSessionID == id { shellInputError = nil }
             if selectedShellSessionID == id { dismissShellCompletion() }
             refreshBackgroundShellResultsIfVisible()
 
         case let .foregroundFinished(result, cwd):
+            clearSecureShellDraftIfNeeded(for: id, run: run)
             if case let .failedToStart(message) = result {
                 if !run.output.isEmpty, !run.output.hasSuffix("\n") { run.output += "\n" }
                 run.output += "Failed to start: \(message)\n"
@@ -1704,16 +1765,21 @@ final class LauncherModel: ObservableObject {
             run.phase = .finished(result)
             run.sessionPhase = .ready
             run.workingDirectory = cwd
+            run.inputEchoState = shellSessionManager.inputEchoState(for: id)
             trimShellOutputIfNeeded(&run)
             shellSessions[index] = run
+            if selectedShellSessionID == id { shellInputError = nil }
             isRunPalettePresented = false
             refreshBackgroundShellResultsIfVisible()
 
         case let .closed(result):
+            clearSecureShellDraftIfNeeded(for: id, run: run)
             run.phase = .finished(result)
             run.sessionPhase = .closing
+            run.inputEchoState = nil
             trimShellOutputIfNeeded(&run)
             shellSessions[index] = run
+            if selectedShellSessionID == id { shellInputError = nil }
             pendingShellCommands[id] = nil
             pendingShellCompletionRequests[id] = nil
             if activeShellCompletionRequestID != nil, selectedShellSessionID == id {
@@ -1771,6 +1837,7 @@ final class LauncherModel: ObservableObject {
             selectsLastCandidate: backward
         )
         activeShellCompletionRequestID = requestID
+        shellCompletionRequestCaretUTF16 = cursor
         shellCompletionSelectsLastCandidate = backward
 
         if let run = shellRun {
@@ -1838,6 +1905,15 @@ final class LauncherModel: ObservableObject {
         ) % shellCompletions.count
     }
 
+    /// A completion result is tied to the caret used to request it. Clicking
+    /// or navigating elsewhere invalidates both an open palette and an
+    /// in-flight request so Return can never rewrite an unrelated token.
+    func noteShellSelectionChanged(locationUTF16: Int, lengthUTF16: Int) {
+        guard activeShellCompletionRequestID != nil,
+              shellCompletionRequestCaretUTF16 != locationUTF16 || lengthUTF16 != 0 else { return }
+        dismissShellCompletion()
+    }
+
     func acceptShellCompletion() {
         acceptShellCompletion(at: shellCompletionSelectionIndex)
     }
@@ -1871,6 +1947,7 @@ final class LauncherModel: ObservableObject {
             }
         }
         activeShellCompletionRequestID = nil
+        shellCompletionRequestCaretUTF16 = nil
         shellCompletionReplacementRange = nil
         shellCompletionSelectsLastCandidate = false
         shellCompletions = []

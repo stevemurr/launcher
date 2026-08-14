@@ -124,6 +124,43 @@ final class LauncherViewCommandTests: XCTestCase {
         )
     }
 
+    func testLiveFieldEditorReportsFullSelectionChanges() throws {
+        var text = "echo /usr/bin/printf"
+        var selections: [NSRange] = []
+        let representable = LauncherSearchField(
+            text: Binding(get: { text }, set: { text = $0 }),
+            focusToken: 0,
+            onSelectionChange: { selections.append($0) },
+            onCommand: { _ in }
+        )
+        let coordinator = representable.makeCoordinator()
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 320, height: 80),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        let field = KeyHandlingTextField(frame: NSRect(x: 10, y: 10, width: 300, height: 32))
+        field.stringValue = text
+        field.delegate = coordinator
+        window.contentView?.addSubview(field)
+        XCTAssertTrue(window.makeFirstResponder(field))
+        let editor = try XCTUnwrap(field.currentEditor() as? NSTextView)
+        coordinator.controlTextDidBeginEditing(
+            Notification(name: NSControl.textDidBeginEditingNotification, object: field)
+        )
+        selections.removeAll()
+
+        let selection = NSRange(location: 5, length: 4)
+        editor.setSelectedRange(selection)
+        NotificationCenter.default.post(
+            name: NSTextView.didChangeSelectionNotification,
+            object: editor
+        )
+
+        XCTAssertEqual(selections.last, selection)
+    }
+
     func testProgrammaticCompletionReplacesTheLiveFieldEditorAndMovesTheCaret() throws {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 320, height: 80),
@@ -170,6 +207,35 @@ final class LauncherViewCommandTests: XCTestCase {
         XCTAssertFalse(field.cell is NSSecureTextFieldCell)
         XCTAssertEqual(field.stringValue, secret)
         XCTAssertEqual(try XCTUnwrap(field.accessibilityValue()), secret)
+    }
+
+    func testSecureDraftIsClearedBeforeAPlaintextCellIsInstalled() throws {
+        let secret = "partial-password"
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 320, height: 80),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        let field = KeyHandlingTextField(frame: NSRect(x: 10, y: 10, width: 300, height: 32))
+        window.contentView?.addSubview(field)
+        field.reconcilePresentation(text: secret, isSecureEntry: true)
+        XCTAssertTrue(window.makeFirstResponder(field))
+        let secureEditor = try XCTUnwrap(field.currentEditor() as? NSTextView)
+        secureEditor.string = secret
+        field.stringValue = secret
+
+        var plaintextTransitionText: String?
+        field.onWillInstallCell = { secure, text in
+            if !secure { plaintextTransitionText = text }
+        }
+        field.reconcilePresentation(text: "", isSecureEntry: false)
+
+        XCTAssertEqual(plaintextTransitionText, "")
+        XCTAssertFalse(field.cell is NSSecureTextFieldCell)
+        XCTAssertEqual(field.stringValue, "")
+        XCTAssertFalse(String(describing: field.accessibilityValue()).contains(secret))
+        Self.retainedSecureEditorTestObjects.append(contentsOf: [window, field, secureEditor])
     }
 
     func testSecureEntryTogglePreservesControlIdentityCaretFocusPresentationAndCommands() throws {
