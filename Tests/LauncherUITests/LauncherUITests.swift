@@ -270,6 +270,43 @@ final class LauncherUITests: XCTestCase {
         XCTAssertTrue(waitForPanelWidth(774))
     }
 
+    func testShellPasswordPromptUsesSecureAccessibilityUntilInputIsSent() {
+        let search = app.textFields["launcher.search"]
+        search.click()
+        search.typeText("> read -s 'secret?Password: '; print accepted")
+        search.typeKey(.return, modifierFlags: [])
+
+        let secureInput = app.secureTextFields["launcher.search"]
+        XCTAssertTrue(
+            secureInput.waitForExistence(timeout: 8),
+            "the launcher did not adopt a secure editor after the PTY disabled echo"
+        )
+        let secret = "top-secret-password"
+        app.typeText(secret)
+
+        let accessibleValue = String(describing: secureInput.value)
+        XCTAssertFalse(accessibleValue.contains(secret), "VoiceOver/XCUITest exposed the password")
+        XCTAssertFalse(secureInput.label.contains(secret))
+
+        app.typeKey(.return, modifierFlags: [])
+        XCTAssertTrue(
+            app.textFields["launcher.search"].waitForExistence(timeout: 8),
+            "the launcher did not return to ordinary shell input after echo was restored"
+        )
+        let output = app.descendants(matching: .any)["shell.output"].firstMatch
+        let accepted = XCTNSPredicateExpectation(
+            predicate: NSPredicate(
+                format: "label CONTAINS %@ OR value CONTAINS %@",
+                "accepted",
+                "accepted"
+            ),
+            object: output
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [accepted], timeout: 8), .completed)
+        XCTAssertFalse(output.label.contains(secret))
+        XCTAssertFalse(String(describing: output.value).contains(secret))
+    }
+
     // Keyboard-driven on purpose: moving the mouse across result rows changes
     // the hover selection, which reflows the footer and races XCUITest's
     // find-then-click coordinates.
