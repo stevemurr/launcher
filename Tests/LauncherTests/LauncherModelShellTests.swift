@@ -468,6 +468,29 @@ final class LauncherModelShellTests: XCTestCase {
         XCTAssertEqual(model.shellInputMode, .idle)
     }
 
+    func testHidingLauncherClearsOnlySecureDraftAndKeepsForegroundSessionAlive() throws {
+        let manager = StubPersistentShellSessionManager()
+        let model = makeModel(shellSessionManager: manager)
+        enterShellMode(model, command: "claude")
+        model.handleSubmit()
+        let id = try XCTUnwrap(manager.startedSessionIDs.first)
+        manager.setInputEchoState(.disabled, for: id)
+        model.query = "hidden-partial-password"
+
+        model.prepareForDismissal()
+
+        XCTAssertEqual(model.query, "")
+        XCTAssertTrue(model.isShellMode)
+        XCTAssertEqual(model.shellRun?.sessionPhase, .foreground)
+        XCTAssertEqual(manager.activeSessionIDs, [id])
+        XCTAssertTrue(manager.interruptedSessionIDs.isEmpty)
+
+        manager.setInputEchoState(.enabled, for: id)
+        model.query = "ordinary foreground draft"
+        model.prepareForDismissal()
+        XCTAssertEqual(model.query, "ordinary foreground draft")
+    }
+
     func testTypedForegroundInputRejectionsAreVisibleAndPreserveTheDraft() throws {
         let manager = StubPersistentShellSessionManager()
         let model = makeModel(shellSessionManager: manager)

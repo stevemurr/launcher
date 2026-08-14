@@ -707,6 +707,16 @@ final class LauncherModel: ObservableObject {
         }
     }
 
+    /// The panel can be ordered out without changing launcher mode (for
+    /// example when another app becomes active). Retain ordinary drafts, but
+    /// never keep an unsent password in memory while the secure editor is
+    /// hidden. The persistent foreground process continues running.
+    func prepareForDismissal() {
+        guard isShellInputSecure else { return }
+        clearShellDraft()
+        shellInputError = nil
+    }
+
     func moveSelection(by offset: Int) {
         if isShellMode {
             if !shellCompletions.isEmpty {

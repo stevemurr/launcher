@@ -270,6 +270,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // Order out first so ending Quick Look control cannot re-key the launcher.
         panel?.orderOut(nil)
         quickLookController.dismiss()
+        model.prepareForDismissal()
         model.dismissOutputPane()
     }
 
