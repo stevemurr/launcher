@@ -105,6 +105,8 @@ protocol PersistentShellSessionManaging: AnyObject {
     /// Rejections are atomic: no portion of the record is written. Acceptance
     /// transfers the complete record to the manager's nonblocking write queue;
     /// a later transport failure closes the session with an actionable event.
+    /// If the foreground ends before consuming the record, any unread bytes are
+    /// discarded at that boundary and can never become input at the shell prompt.
     @discardableResult
     func submitInputLine(
         _ input: String,
@@ -430,7 +432,8 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
             guard let session = sessions[id], session.phase == .foreground else {
                 return .rejected(.sessionNotForeground)
             }
-            guard session.pendingForegroundResult == nil,
+            guard !session.interruptRequested,
+                  session.pendingForegroundResult == nil,
                   !session.completionProbePending,
                   !session.interruptProbePending else {
                 return .rejected(.sessionFinishing)
@@ -479,11 +482,22 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
     func interruptForeground(in id: ShellSessionID) {
         queue.async { [self] in
             guard let session = self.sessions[id], session.phase == .foreground else { return }
+            // Once F or a private recovery probe is pending, terminal input is
+            // manager-owned syntax. Flushing here would erase that syntax.
+            guard session.pendingForegroundResult == nil,
+                  !session.completionProbePending,
+                  !session.interruptProbePending else { return }
             guard !session.interruptSignalPending else { return }
-            self.discardPendingInput(for: session)
             session.interruptRequested = true
             session.interruptSignalPending = true
             session.interruptPollGeneration &+= 1
+            guard self.discardUnreadForegroundInput(for: session) else {
+                self.failControlProtocol(
+                    for: session,
+                    message: "Shell terminal input could not be flushed before interrupt."
+                )
+                return
+            }
             let generation = session.interruptPollGeneration
             self.queue.asyncAfter(deadline: .now() + .milliseconds(150)) { [weak self, weak session] in
                 guard let self, let session, self.sessions[session.id] === session else { return }
@@ -624,7 +638,7 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
       \\enable builtin 2>/dev/null
       \\builtin local __launcher_private_b64 __launcher_private_command
       \\builtin local __launcher_private_status='' __launcher_private_cwd __launcher_private_path __launcher_private_home
-      \\builtin local __launcher_private_shell_commands
+      \\builtin local __launcher_private_shell_commands __launcher_private_release
       IFS= \\builtin read -r __launcher_private_b64 <&4 || \\builtin return 125
       __launcher_private_command="$(/usr/bin/printf '%s' "$__launcher_private_b64" | /usr/bin/base64 -D)"
       /usr/bin/printf 'S\n' >&3
@@ -644,6 +658,8 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
           "$__launcher_private_status" "$__launcher_private_cwd" \
           "$__launcher_private_path" "$__launcher_private_home" \
           "$__launcher_private_shell_commands" >&3
+        IFS= \\builtin read -r __launcher_private_release <&4 || \\builtin return 125
+        [[ "$__launcher_private_release" == A ]] || \\builtin return 125
       }
     }
     """ + "\n"
@@ -656,7 +672,10 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
       \\enable builtin 2>/dev/null
       \\builtin local __launcher_private_probe __launcher_private_cwd __launcher_private_path __launcher_private_home
       \\builtin local __launcher_private_shell_commands
-      IFS= \\builtin read -r __launcher_private_probe <&4 || \\builtin return 125
+      while IFS= \\builtin read -r __launcher_private_probe <&4; do
+        [[ "$__launcher_private_probe" == I ]] && \\builtin break
+      done
+      [[ "$__launcher_private_probe" == I ]] || \\builtin return 125
       __launcher_private_cwd="$(/usr/bin/printf '%s' "$PWD" | /usr/bin/base64)"
       __launcher_private_path="$(/usr/bin/printf '%s' "$PATH" | /usr/bin/base64)"
       __launcher_private_home="$(/usr/bin/printf '%s' "$HOME" | /usr/bin/base64)"
@@ -678,7 +697,10 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
       \\enable builtin 2>/dev/null
       \\builtin local __launcher_private_probe __launcher_private_cwd __launcher_private_path __launcher_private_home
       \\builtin local __launcher_private_shell_commands
-      IFS= \\builtin read -r __launcher_private_probe <&4 || \\builtin return 125
+      while IFS= \\builtin read -r __launcher_private_probe <&4; do
+        [[ "$__launcher_private_probe" == Q ]] && \\builtin break
+      done
+      [[ "$__launcher_private_probe" == Q ]] || \\builtin return 125
       __launcher_private_cwd="$(/usr/bin/printf '%s' "$PWD" | /usr/bin/base64)"
       __launcher_private_path="$(/usr/bin/printf '%s' "$PATH" | /usr/bin/base64)"
       __launcher_private_home="$(/usr/bin/printf '%s' "$HOME" | /usr/bin/base64)"
@@ -792,6 +814,18 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
         session.pendingInputRecords.removeAll(keepingCapacity: false)
         session.pendingInputByteCount = 0
         suspendInputWriteSourceIfNeeded(for: session)
+    }
+
+    /// Stops userspace transport first, then discards only terminal input that
+    /// the foreground process has not consumed. Calling this at an interrupt or
+    /// F boundary prevents typeahead from becoming an unmanaged zsh command.
+    private func discardUnreadForegroundInput(for session: Session) -> Bool {
+        discardPendingInput(for: session)
+        while tcflush(session.masterFD, TCIFLUSH) == -1 {
+            if errno == EINTR { continue }
+            return false
+        }
+        return true
     }
 
     private func cancelInputWriteSource(for session: Session) {
@@ -943,13 +977,25 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
             guard let status = Int32(fields[1]),
                   let cwd = decode64(fields[2]),
                   let path = decode64(fields[3]) else { return }
+            // The wrapper remains blocked on FD4 after emitting F. Unless an
+            // interrupt recovery probe already owns the release handshake,
+            // stop userspace writes and flush unread typeahead before queuing
+            // any manager-owned syntax or allowing zsh to return to its prompt.
+            let interruptRecoveryOwnsRelease = session.interruptProbePending
+            if !interruptRecoveryOwnsRelease,
+               !discardUnreadForegroundInput(for: session) {
+                failControlProtocol(
+                    for: session,
+                    message: "Shell terminal input could not be flushed after foreground exit."
+                )
+                return
+            }
             if fields.indices.contains(4), let home = decode64(fields[4]) {
                 session.home = home
             }
             if fields.indices.contains(5) {
                 updateShellCommandNames(from: fields[5], for: session)
             }
-            discardPendingInput(for: session)
             session.cwd = cwd
             session.path = path
             // POSIX writes command output before the control frame, but the two
@@ -968,10 +1014,12 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
                 result = .failure(exitCode: status)
             }
             session.pendingForegroundResult = result
-            session.interruptPollGeneration &+= 1
+            if !interruptRecoveryOwnsRelease {
+                session.interruptPollGeneration &+= 1
+            }
             session.interruptSignalPending = false
             refreshInputEchoState(for: session)
-            if !session.interruptProbePending {
+            if !interruptRecoveryOwnsRelease {
                 beginCompletionProbe(for: session)
             }
 
@@ -1015,15 +1063,17 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
 
     private func beginCompletionProbe(for session: Session) {
         guard !session.completionProbePending else { return }
+        session.completionProbePending = true
         guard writeInternalScript(Self.completionProbeScript, to: session),
-              write("Q\n", to: session.commandFD) else {
+              // A releases the post-F wrapper only after the Q script is in
+              // the terminal queue. Q is then consumed by that private script.
+              write("A\nQ\n", to: session.commandFD) else {
             failControlProtocol(
                 for: session,
                 message: "Shell did not accept the command-completion state probe."
             )
             return
         }
-        session.completionProbePending = true
         let generation = session.interruptPollGeneration
         queue.asyncAfter(deadline: .now() + controlProbeTimeout) { [weak self, weak session] in
             guard let self, let session,
@@ -1326,15 +1376,24 @@ final class ProcessPersistentShellSessionManager: PersistentShellSessionManaging
                 // but cached cwd is not authoritative. Ask the live shell over
                 // the private control channel and complete only after I arrives.
                 guard !session.interruptProbePending else { return }
+                guard self.discardUnreadForegroundInput(for: session) else {
+                    self.failControlProtocol(
+                        for: session,
+                        message: "Shell terminal input could not be flushed before interrupt recovery."
+                    )
+                    return
+                }
+                session.interruptProbePending = true
                 guard self.writeInternalScript(Self.interruptProbeScript, to: session),
-                      self.write("P\n", to: session.commandFD) else {
+                      // A releases a wrapper if F raced control-pipe delivery;
+                      // a genuine no-F probe skips A and consumes tagged I.
+                      self.write("A\nI\n", to: session.commandFD) else {
                     self.failControlProtocol(
                         for: session,
                         message: "Shell did not accept the post-interrupt state probe."
                     )
                     return
                 }
-                session.interruptProbePending = true
                 self.scheduleInterruptProbeTimeout(for: session, generation: generation)
             } else {
                 // A signal-handling Claude/TUI retains its own foreground group.

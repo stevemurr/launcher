@@ -430,6 +430,59 @@ final class ProcessPersistentShellSessionManagerTests: XCTestCase {
         )
     }
 
+    func testUnreadForegroundInputCannotEscapeIntoTheShellAfterTheChildExits() throws {
+        let directory = try makeTemporaryDirectory(named: "unread-input")
+        let escapedSentinel = directory.appendingPathComponent("escaped-sentinel")
+        let manager = makeManager()
+        let id = ShellSessionID()
+        let ready = expectation(description: "ready")
+        let childReady = expectation(description: "non-reading child ready")
+        let childFinished = expectation(description: "non-reading child finished")
+        let followupFinished = expectation(description: "follow-up finished")
+        var transcript = ""
+        var observedChildReady = false
+        var finishCount = 0
+
+        XCTAssertTrue(manager.startSession(id: id, onOutput: { _, output in
+            transcript += output
+            if !observedChildReady, transcript.contains("NON_READING_CHILD_READY") {
+                observedChildReady = true
+                childReady.fulfill()
+            }
+        }, onEvent: { _, event in
+            switch event {
+            case .ready:
+                ready.fulfill()
+            case .foregroundFinished:
+                finishCount += 1
+                (finishCount == 1 ? childFinished : followupFinished).fulfill()
+            default:
+                break
+            }
+        }))
+        wait(for: [ready], timeout: 5)
+
+        XCTAssertTrue(manager.submitCommand(
+            "/bin/sh -c 'echo NON_READING_CHILD_READY; /bin/sleep 1'",
+            to: id
+        ))
+        wait(for: [childReady], timeout: 5)
+        XCTAssertEqual(
+            manager.submitInputLine("touch \(quote(escapedSentinel.path))", to: id),
+            .accepted
+        )
+        wait(for: [childFinished], timeout: 5)
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: escapedSentinel.path),
+            "Unread foreground input escaped into zsh after F: \(transcript)"
+        )
+
+        XCTAssertTrue(manager.submitCommand("echo TYPEAHEAD_FLUSH_SURVIVED", to: id))
+        wait(for: [followupFinished], timeout: 5)
+        XCTAssertTrue(transcript.contains("TYPEAHEAD_FLUSH_SURVIVED"), transcript)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: escapedSentinel.path))
+    }
+
     func testForegroundEchoObservationBacksOffForQuietLongRunningJobs() {
         let observationLock = NSLock()
         var observationCount = 0
@@ -541,11 +594,16 @@ final class ProcessPersistentShellSessionManagerTests: XCTestCase {
         XCTAssertTrue(manager.submitCommand("cd \(quote(directory.path)); sleep 30", to: id))
         wait(for: [started], timeout: 5)
         manager.interruptForeground(in: id)
+        XCTAssertEqual(
+            manager.submitInputLine("echo INTERRUPT_RACE_SENTINEL", to: id),
+            .rejected(.sessionFinishing)
+        )
         manager.interruptForeground(in: id)
         wait(for: [interrupted], timeout: 5)
         XCTAssertTrue(manager.submitCommand("echo recovered", to: id))
         wait(for: [recovered], timeout: 5)
         XCTAssertTrue(transcript.contains("recovered"), transcript)
+        XCTAssertFalse(transcript.contains("INTERRUPT_RACE_SENTINEL"), transcript)
     }
 
     func testRepeatedInterruptCompletionAlwaysUsesAuthoritativeCWD() throws {
@@ -1019,14 +1077,18 @@ final class ProcessPersistentShellSessionManagerTests: XCTestCase {
             }
         }))
         wait(for: [ready], timeout: 5)
-        let perl = #"/usr/bin/perl -e '$SIG{INT}="IGNORE"; $|=1; print "READER_READY\n"; my $line=<STDIN>; print "READER:$line";'"#
+        let perl = #"/usr/bin/perl -e '$SIG{INT}="IGNORE"; $|=1; print "READER_READY\n"; select undef,undef,undef,0.5; print "SIGNAL_HANDLER_SURVIVED\n";'"#
         XCTAssertTrue(manager.submitCommand(perl, to: id))
         wait(for: [readerStarted], timeout: 5)
         manager.interruptForeground(in: id)
         RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.2))
-        XCTAssertTrue(manager.sendInputLine("user supplied", to: id))
+        XCTAssertEqual(
+            manager.submitInputLine("user supplied", to: id),
+            .rejected(.sessionFinishing)
+        )
         wait(for: [finished], timeout: 5)
-        XCTAssertTrue(transcript.contains("READER:user supplied"), transcript)
+        XCTAssertTrue(transcript.contains("SIGNAL_HANDLER_SURVIVED"), transcript)
+        XCTAssertFalse(transcript.contains("user supplied"), transcript)
         XCTAssertFalse(transcript.contains("__launcher_finish 130"), transcript)
     }
 
