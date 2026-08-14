@@ -10,6 +10,7 @@
 		042AA99859E02EEA18AFC12D /* LauncherStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 953AD0B06FE7658A0C361BB1 /* LauncherStyle.swift */; };
 		05C8191A6E24D2B2D09256D1 /* LauncherSearchField.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55A099A844B590130F3650B9 /* LauncherSearchField.swift */; };
 		0810007FA5B829870EA59EEA /* LauncherUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC585299115FB38609AB5E20 /* LauncherUITests.swift */; };
+		0FA7134809B8DCC46E2E6780 /* LauncherModelShellTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66D1D64C404FAF1C9CEAFF39 /* LauncherModelShellTests.swift */; };
 		1085E97C3F3E3DCDA467D6EC /* LauncherViewCommandTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9559737EBF91FC010116325 /* LauncherViewCommandTests.swift */; };
 		186A63C2A6DA9494480A3961 /* QuickLookController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D368412C1CCFBA40D8AFCC0 /* QuickLookController.swift */; };
 		22ED689DD4A63D715867FA8D /* LauncherModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 959701A99FA58E1D01A1DE54 /* LauncherModel.swift */; };
@@ -17,16 +18,23 @@
 		2ECACD85B0177072B7F4FF3F /* LauncherView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78CA243E2DE30FA30AD048FA /* LauncherView.swift */; };
 		33AFC398F4A8F3447FF8B9BA /* ShellEnvironmentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D821BCE0F870685B79B45BB /* ShellEnvironmentTests.swift */; };
 		345416DE7971D249E1271175 /* LauncherModelActivationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FB3D185BDBC754C45F2C3F6 /* LauncherModelActivationTests.swift */; };
+		422ACA2552A7ADB43B97367A /* PersistentShellSessionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D88C5541841B20155352CEB /* PersistentShellSessionManager.swift */; };
+		424040A994F4A330A5094341 /* TerminalOutputSanitizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE295E03903F191DA932DED8 /* TerminalOutputSanitizer.swift */; };
+		54EC05C87B026A933997F657 /* ProcessShellJobManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F91668E708828C6E7ECC38D /* ProcessShellJobManagerTests.swift */; };
 		5564804FBFF5BA3D4B05D5B7 /* LoginItemManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6806BDFD401F2AFAD4D08BA8 /* LoginItemManager.swift */; };
 		59A1721A35E0C1EEE87855AD /* ScriptMetadataParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = E44077ACF2B963B94590B078 /* ScriptMetadataParser.swift */; };
 		60AF4B837F63C81F926E0207 /* ShellEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33777B688F8CE0A80790584C /* ShellEnvironment.swift */; };
 		681691F840D52E4C3A79EF75 /* LauncherLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D27CEDA49CE3104F1F77F73 /* LauncherLayoutTests.swift */; };
+		73560774F41DD6C0BDCB0D1B /* ProcessShellCommandRunnerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 92CE286B11E39B57AFFC39E9 /* ProcessShellCommandRunnerTests.swift */; };
+		75F8E56DA989546E654E02AC /* TerminalOutputSanitizerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1215F93F222A67A7313D27E5 /* TerminalOutputSanitizerTests.swift */; };
 		76F7B695F92592DF8586D322 /* ScriptTemplate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 360EE4294641E5CDD2AACB69 /* ScriptTemplate.swift */; };
+		772B11A6AF85380BA6359DF1 /* ProcessPersistentShellSessionManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6BAC37AB99FEF5CF4386243 /* ProcessPersistentShellSessionManagerTests.swift */; };
 		779D9CC11716ADEF8468B29B /* CreateScriptView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75B0EA5492FD084DEF198FEC /* CreateScriptView.swift */; };
 		7D6E6BF9A82239624C1F54CE /* ScriptCommandEditTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2A28DE623FE74BB2FC56AC2 /* ScriptCommandEditTests.swift */; };
 		857EB1F9255DB649E0E7E94C /* ScriptMetadataParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D41C41F97A80DE2EABF52CF /* ScriptMetadataParserTests.swift */; };
 		9651113817F0E6389AF3D405 /* CalculatorEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5F0A3983DB48B1CC8A4AC98 /* CalculatorEngine.swift */; };
 		97E205D4EEC7B758428B8969 /* LauncherSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8F840D5367FE63FF4EAA995 /* LauncherSettings.swift */; };
+		9912A5A3418DD7276FEB6ACB /* ShellJobManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = C701DC2120FD365171A0C511 /* ShellJobManager.swift */; };
 		99E3D069AC677C7055589DCD /* ProcessScriptRunnerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88B060740AADCCDCDAC4283A /* ProcessScriptRunnerTests.swift */; };
 		A0D3DC0113EC2E5A8833DFEC /* ScriptCommandViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = EAE88098541CEEB0A11C5D65 /* ScriptCommandViews.swift */; };
 		A3E3543C17D485954CE5BB72 /* LauncherApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66D6E805E68A65282B70E574 /* LauncherApp.swift */; };
@@ -43,6 +51,7 @@
 		C5523A53CF608771CE02846E /* SearchMatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3CD275177CC43FB2971B93F /* SearchMatcher.swift */; };
 		C69615A275E99373C79150BD /* FileBrowserEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8ACA839D941EA5C60F07DFA0 /* FileBrowserEngineTests.swift */; };
 		C6CA839AC30C9F5504501D57 /* FileBrowserViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68DD0F140A6AA3E9FFE267AA /* FileBrowserViews.swift */; };
+		C94BDA6C44E9909C1F4E85BB /* ShellConsoleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16F64CE22D411B4C25FB2949 /* ShellConsoleView.swift */; };
 		CD6BBEEAD9F0A050F7117668 /* FileBrowserEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 456F09D2CE2629861AA3F501 /* FileBrowserEngine.swift */; };
 		D25355B6291F652BB5845034 /* ScriptCommand.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2FA8646C1767994E168BA1B8 /* ScriptCommand.swift */; };
 		D5F89921200598D3909B05B8 /* HotKeyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22FC720CE493F39081F98814 /* HotKeyTests.swift */; };
@@ -73,6 +82,9 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		0D88C5541841B20155352CEB /* PersistentShellSessionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersistentShellSessionManager.swift; sourceTree = "<group>"; };
+		1215F93F222A67A7313D27E5 /* TerminalOutputSanitizerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalOutputSanitizerTests.swift; sourceTree = "<group>"; };
+		16F64CE22D411B4C25FB2949 /* ShellConsoleView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShellConsoleView.swift; sourceTree = "<group>"; };
 		187433F6A367F18FCC448DDC /* AppIcon.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = AppIcon.icns; sourceTree = "<group>"; };
 		22FC720CE493F39081F98814 /* HotKeyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotKeyTests.swift; sourceTree = "<group>"; };
 		23A633A776AC0D79DECF9AD0 /* LauncherModelScriptTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherModelScriptTests.swift; sourceTree = "<group>"; };
@@ -86,18 +98,21 @@
 		55A099A844B590130F3650B9 /* LauncherSearchField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherSearchField.swift; sourceTree = "<group>"; };
 		5D41C41F97A80DE2EABF52CF /* ScriptMetadataParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScriptMetadataParserTests.swift; sourceTree = "<group>"; };
 		5D821BCE0F870685B79B45BB /* ShellEnvironmentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShellEnvironmentTests.swift; sourceTree = "<group>"; };
+		66D1D64C404FAF1C9CEAFF39 /* LauncherModelShellTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherModelShellTests.swift; sourceTree = "<group>"; };
 		66D6E805E68A65282B70E574 /* LauncherApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherApp.swift; sourceTree = "<group>"; };
 		6806BDFD401F2AFAD4D08BA8 /* LoginItemManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginItemManager.swift; sourceTree = "<group>"; };
 		68DD0F140A6AA3E9FFE267AA /* FileBrowserViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileBrowserViews.swift; sourceTree = "<group>"; };
 		75B0EA5492FD084DEF198FEC /* CreateScriptView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CreateScriptView.swift; sourceTree = "<group>"; };
 		78CA243E2DE30FA30AD048FA /* LauncherView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherView.swift; sourceTree = "<group>"; };
 		7DDD9C9CA91E8C5CB6FC2B07 /* ScriptTemplateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScriptTemplateTests.swift; sourceTree = "<group>"; };
+		7F91668E708828C6E7ECC38D /* ProcessShellJobManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessShellJobManagerTests.swift; sourceTree = "<group>"; };
 		88B060740AADCCDCDAC4283A /* ProcessScriptRunnerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessScriptRunnerTests.swift; sourceTree = "<group>"; };
 		8ACA839D941EA5C60F07DFA0 /* FileBrowserEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileBrowserEngineTests.swift; sourceTree = "<group>"; };
 		8C8179AFAF0BE5421D6414F9 /* LauncherModelFileBrowserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherModelFileBrowserTests.swift; sourceTree = "<group>"; };
 		8D368412C1CCFBA40D8AFCC0 /* QuickLookController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickLookController.swift; sourceTree = "<group>"; };
 		8FB3D185BDBC754C45F2C3F6 /* LauncherModelActivationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherModelActivationTests.swift; sourceTree = "<group>"; };
 		90295A2700AC7CD5C55F7BE8 /* HotKeyManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotKeyManager.swift; sourceTree = "<group>"; };
+		92CE286B11E39B57AFFC39E9 /* ProcessShellCommandRunnerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessShellCommandRunnerTests.swift; sourceTree = "<group>"; };
 		92E11DDA382BE4016522B31D /* LauncherItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherItem.swift; sourceTree = "<group>"; };
 		953AD0B06FE7658A0C361BB1 /* LauncherStyle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherStyle.swift; sourceTree = "<group>"; };
 		959701A99FA58E1D01A1DE54 /* LauncherModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherModel.swift; sourceTree = "<group>"; };
@@ -107,15 +122,18 @@
 		A3CD275177CC43FB2971B93F /* SearchMatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchMatcher.swift; sourceTree = "<group>"; };
 		A7687ECD124A9C4AB58CDE5B /* LauncherUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LauncherUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A9559737EBF91FC010116325 /* LauncherViewCommandTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherViewCommandTests.swift; sourceTree = "<group>"; };
+		AE295E03903F191DA932DED8 /* TerminalOutputSanitizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalOutputSanitizer.swift; sourceTree = "<group>"; };
 		B75165610075AD476946FC54 /* LauncherTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LauncherTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		B8F840D5367FE63FF4EAA995 /* LauncherSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherSettings.swift; sourceTree = "<group>"; };
 		B8FF128CD13583C6368BA16A /* LoginItemTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginItemTests.swift; sourceTree = "<group>"; };
 		C2A28DE623FE74BB2FC56AC2 /* ScriptCommandEditTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScriptCommandEditTests.swift; sourceTree = "<group>"; };
 		C37CD42E041B06B18157EA04 /* ScriptRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScriptRunner.swift; sourceTree = "<group>"; };
+		C701DC2120FD365171A0C511 /* ShellJobManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShellJobManager.swift; sourceTree = "<group>"; };
 		DD2385441792714C3385DD28 /* CalculatorEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalculatorEngineTests.swift; sourceTree = "<group>"; };
 		E1E6B80D5E0B5333313B4C27 /* ApplicationCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApplicationCatalog.swift; sourceTree = "<group>"; };
 		E44077ACF2B963B94590B078 /* ScriptMetadataParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScriptMetadataParser.swift; sourceTree = "<group>"; };
 		E5F0A3983DB48B1CC8A4AC98 /* CalculatorEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalculatorEngine.swift; sourceTree = "<group>"; };
+		E6BAC37AB99FEF5CF4386243 /* ProcessPersistentShellSessionManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessPersistentShellSessionManagerTests.swift; sourceTree = "<group>"; };
 		E7BF84A9578FE25A2E5ECECF /* ScriptCommandCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScriptCommandCatalog.swift; sourceTree = "<group>"; };
 		EAE88098541CEEB0A11C5D65 /* ScriptCommandViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScriptCommandViews.swift; sourceTree = "<group>"; };
 		EB1552D65C5E9701D5DBEDEA /* SearchMatcherTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchMatcherTests.swift; sourceTree = "<group>"; };
@@ -155,15 +173,20 @@
 				8FB3D185BDBC754C45F2C3F6 /* LauncherModelActivationTests.swift */,
 				8C8179AFAF0BE5421D6414F9 /* LauncherModelFileBrowserTests.swift */,
 				23A633A776AC0D79DECF9AD0 /* LauncherModelScriptTests.swift */,
+				66D1D64C404FAF1C9CEAFF39 /* LauncherModelShellTests.swift */,
 				A9559737EBF91FC010116325 /* LauncherViewCommandTests.swift */,
 				B8FF128CD13583C6368BA16A /* LoginItemTests.swift */,
+				E6BAC37AB99FEF5CF4386243 /* ProcessPersistentShellSessionManagerTests.swift */,
 				88B060740AADCCDCDAC4283A /* ProcessScriptRunnerTests.swift */,
+				92CE286B11E39B57AFFC39E9 /* ProcessShellCommandRunnerTests.swift */,
+				7F91668E708828C6E7ECC38D /* ProcessShellJobManagerTests.swift */,
 				4C12D999401E6A23F3CF880E /* ScriptCommandCatalogTests.swift */,
 				C2A28DE623FE74BB2FC56AC2 /* ScriptCommandEditTests.swift */,
 				5D41C41F97A80DE2EABF52CF /* ScriptMetadataParserTests.swift */,
 				7DDD9C9CA91E8C5CB6FC2B07 /* ScriptTemplateTests.swift */,
 				EB1552D65C5E9701D5DBEDEA /* SearchMatcherTests.swift */,
 				5D821BCE0F870685B79B45BB /* ShellEnvironmentTests.swift */,
+				1215F93F222A67A7313D27E5 /* TerminalOutputSanitizerTests.swift */,
 			);
 			path = LauncherTests;
 			sourceTree = "<group>";
@@ -178,6 +201,7 @@
 				953AD0B06FE7658A0C361BB1 /* LauncherStyle.swift */,
 				78CA243E2DE30FA30AD048FA /* LauncherView.swift */,
 				EAE88098541CEEB0A11C5D65 /* ScriptCommandViews.swift */,
+				16F64CE22D411B4C25FB2949 /* ShellConsoleView.swift */,
 				265DBA07B8910347D94016D1 /* VisualEffectView.swift */,
 			);
 			path = Views;
@@ -199,6 +223,7 @@
 				456F09D2CE2629861AA3F501 /* FileBrowserEngine.swift */,
 				90295A2700AC7CD5C55F7BE8 /* HotKeyManager.swift */,
 				6806BDFD401F2AFAD4D08BA8 /* LoginItemManager.swift */,
+				0D88C5541841B20155352CEB /* PersistentShellSessionManager.swift */,
 				8D368412C1CCFBA40D8AFCC0 /* QuickLookController.swift */,
 				E7BF84A9578FE25A2E5ECECF /* ScriptCommandCatalog.swift */,
 				E44077ACF2B963B94590B078 /* ScriptMetadataParser.swift */,
@@ -206,6 +231,8 @@
 				360EE4294641E5CDD2AACB69 /* ScriptTemplate.swift */,
 				A3CD275177CC43FB2971B93F /* SearchMatcher.swift */,
 				33777B688F8CE0A80790584C /* ShellEnvironment.swift */,
+				C701DC2120FD365171A0C511 /* ShellJobManager.swift */,
+				AE295E03903F191DA932DED8 /* TerminalOutputSanitizer.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -408,6 +435,7 @@
 				042AA99859E02EEA18AFC12D /* LauncherStyle.swift in Sources */,
 				2ECACD85B0177072B7F4FF3F /* LauncherView.swift in Sources */,
 				5564804FBFF5BA3D4B05D5B7 /* LoginItemManager.swift in Sources */,
+				422ACA2552A7ADB43B97367A /* PersistentShellSessionManager.swift in Sources */,
 				186A63C2A6DA9494480A3961 /* QuickLookController.swift in Sources */,
 				D25355B6291F652BB5845034 /* ScriptCommand.swift in Sources */,
 				F249BBE16A79E212139415AA /* ScriptCommandCatalog.swift in Sources */,
@@ -416,7 +444,10 @@
 				ADE5E8B46E9CB62068D855E9 /* ScriptRunner.swift in Sources */,
 				76F7B695F92592DF8586D322 /* ScriptTemplate.swift in Sources */,
 				C5523A53CF608771CE02846E /* SearchMatcher.swift in Sources */,
+				C94BDA6C44E9909C1F4E85BB /* ShellConsoleView.swift in Sources */,
 				60AF4B837F63C81F926E0207 /* ShellEnvironment.swift in Sources */,
+				9912A5A3418DD7276FEB6ACB /* ShellJobManager.swift in Sources */,
+				424040A994F4A330A5094341 /* TerminalOutputSanitizer.swift in Sources */,
 				A8C8B95305F600C55D72FB68 /* VisualEffectView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -433,15 +464,20 @@
 				345416DE7971D249E1271175 /* LauncherModelActivationTests.swift in Sources */,
 				F00697F53BA583B20761C231 /* LauncherModelFileBrowserTests.swift in Sources */,
 				B223CBCA95451CD251A56423 /* LauncherModelScriptTests.swift in Sources */,
+				0FA7134809B8DCC46E2E6780 /* LauncherModelShellTests.swift in Sources */,
 				1085E97C3F3E3DCDA467D6EC /* LauncherViewCommandTests.swift in Sources */,
 				ACD761DEB815A677F35E18F6 /* LoginItemTests.swift in Sources */,
+				772B11A6AF85380BA6359DF1 /* ProcessPersistentShellSessionManagerTests.swift in Sources */,
 				99E3D069AC677C7055589DCD /* ProcessScriptRunnerTests.swift in Sources */,
+				73560774F41DD6C0BDCB0D1B /* ProcessShellCommandRunnerTests.swift in Sources */,
+				54EC05C87B026A933997F657 /* ProcessShellJobManagerTests.swift in Sources */,
 				F49E81393F20D2429524498C /* ScriptCommandCatalogTests.swift in Sources */,
 				7D6E6BF9A82239624C1F54CE /* ScriptCommandEditTests.swift in Sources */,
 				857EB1F9255DB649E0E7E94C /* ScriptMetadataParserTests.swift in Sources */,
 				24C3A77AA0CE567ED036B3AB /* ScriptTemplateTests.swift in Sources */,
 				B0E04C68AD4A1E6D81EDE12D /* SearchMatcherTests.swift in Sources */,
 				33AFC398F4A8F3447FF8B9BA /* ShellEnvironmentTests.swift in Sources */,
+				75F8E56DA989546E654E02AC /* TerminalOutputSanitizerTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

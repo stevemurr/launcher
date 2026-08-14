@@ -25,6 +25,7 @@ final class LauncherViewCommandTests: XCTestCase {
         XCTAssertFalse(LauncherKeyCommand.deleteScript.acceptsKeyRepeat)
         XCTAssertFalse(LauncherKeyCommand.toggleActions.acceptsKeyRepeat)
         XCTAssertFalse(LauncherKeyCommand.copyScriptContents.acceptsKeyRepeat)
+        XCTAssertFalse(LauncherKeyCommand.interruptRun.acceptsKeyRepeat)
     }
 
     func testDisplayedCopyScriptShortcutRoutesToItsCommand() throws {
@@ -48,6 +49,181 @@ final class LauncherViewCommandTests: XCTestCase {
 
         XCTAssertTrue(field.performKeyEquivalent(with: event))
         XCTAssertEqual(received, .copyScriptContents)
+    }
+
+    func testControlCRoutesToProcessInterrupt() throws {
+        let field = KeyHandlingTextField(frame: .zero)
+        var received: LauncherKeyCommand?
+        field.onCommand = { received = $0 }
+        let event = try XCTUnwrap(
+            NSEvent.keyEvent(
+                with: .keyDown,
+                location: .zero,
+                modifierFlags: [.control, .capsLock, .function],
+                timestamp: 0,
+                windowNumber: 0,
+                context: nil,
+                characters: "c",
+                charactersIgnoringModifiers: "c",
+                isARepeat: false,
+                keyCode: 8
+            )
+        )
+
+        XCTAssertTrue(field.performKeyEquivalent(with: event))
+        XCTAssertEqual(received, .interruptRun)
+    }
+
+    func testTabRoutesToTheContextualFocusOrCompletionCommand() throws {
+        let field = KeyHandlingTextField(frame: .zero)
+        var received: [LauncherKeyCommand] = []
+        field.onCommand = { received.append($0) }
+
+        let tab = try XCTUnwrap(
+            NSEvent.keyEvent(
+                with: .keyDown,
+                location: .zero,
+                modifierFlags: [],
+                timestamp: 0,
+                windowNumber: 0,
+                context: nil,
+                characters: "\t",
+                charactersIgnoringModifiers: "\t",
+                isARepeat: false,
+                keyCode: 48
+            )
+        )
+        let backTab = try XCTUnwrap(
+            NSEvent.keyEvent(
+                with: .keyDown,
+                location: .zero,
+                modifierFlags: [.shift],
+                timestamp: 0,
+                windowNumber: 0,
+                context: nil,
+                characters: "\u{19}",
+                charactersIgnoringModifiers: "\u{19}",
+                isARepeat: false,
+                keyCode: 48
+            )
+        )
+
+        field.keyDown(with: tab)
+        field.keyDown(with: backTab)
+
+        XCTAssertEqual(received, [.focusNext, .focusPrevious])
+    }
+
+    func testProgrammaticCompletionReplacesTheLiveFieldEditorAndMovesTheCaret() throws {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 320, height: 80),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        let field = KeyHandlingTextField(frame: NSRect(x: 10, y: 10, width: 300, height: 32))
+        window.contentView?.addSubview(field)
+        XCTAssertTrue(window.makeFirstResponder(field))
+        let editor = try XCTUnwrap(field.currentEditor() as? NSTextView)
+        editor.string = "git che"
+        field.stringValue = "git che"
+
+        field.replaceTextIfNeeded("git checkout ")
+
+        XCTAssertEqual(field.stringValue, "git checkout ")
+        XCTAssertEqual(editor.string, "git checkout ")
+        XCTAssertEqual(editor.selectedRange(), NSRange(location: 13, length: 0))
+    }
+
+    func testShellTabRequestsThenCyclesCompletionCandidates() {
+        XCTAssertEqual(
+            ShellCompletionKeyboardAction.resolve(.focusNext, isShellMode: true, hasCandidates: false),
+            .request(backward: false)
+        )
+        XCTAssertEqual(
+            ShellCompletionKeyboardAction.resolve(.focusPrevious, isShellMode: true, hasCandidates: false),
+            .request(backward: true)
+        )
+        XCTAssertEqual(
+            ShellCompletionKeyboardAction.resolve(.focusNext, isShellMode: true, hasCandidates: true),
+            .move(offset: 1)
+        )
+        XCTAssertEqual(
+            ShellCompletionKeyboardAction.resolve(.focusPrevious, isShellMode: true, hasCandidates: true),
+            .move(offset: -1)
+        )
+    }
+
+    func testShellCompletionCandidatesTemporarilyOwnArrowsAndReturn() {
+        XCTAssertEqual(
+            ShellCompletionKeyboardAction.resolve(.moveDown, isShellMode: true, hasCandidates: true),
+            .move(offset: 1)
+        )
+        XCTAssertEqual(
+            ShellCompletionKeyboardAction.resolve(.moveUp, isShellMode: true, hasCandidates: true),
+            .move(offset: -1)
+        )
+        XCTAssertEqual(
+            ShellCompletionKeyboardAction.resolve(.submit, isShellMode: true, hasCandidates: true),
+            .accept
+        )
+        XCTAssertNil(
+            ShellCompletionKeyboardAction.resolve(.moveUp, isShellMode: true, hasCandidates: false),
+            "without a palette, arrows must remain available to shell history"
+        )
+        XCTAssertNil(
+            ShellCompletionKeyboardAction.resolve(.submit, isShellMode: true, hasCandidates: false),
+            "without a palette, Return must execute or send input"
+        )
+    }
+
+    func testCompletionRoutingNeverStealsKeysOutsideShellMode() {
+        for command in [
+            LauncherKeyCommand.focusNext,
+            .focusPrevious,
+            .moveDown,
+            .moveUp,
+            .submit,
+            .escape,
+        ] {
+            XCTAssertNil(
+                ShellCompletionKeyboardAction.resolve(command, isShellMode: false, hasCandidates: true)
+            )
+        }
+    }
+
+    func testShellPrimaryActionReflectsForegroundInputMode() {
+        XCTAssertEqual(ShellInputPresentation.primaryActionTitle(for: .idle), "Run Command")
+        XCTAssertEqual(ShellInputPresentation.primaryActionTitle(for: .foreground), "Send Input")
+    }
+
+    func testPanelRoutesControlCWhenTheSearchFieldDoesNotOwnFocus() throws {
+        let panel = LauncherPanel(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: false)
+        var interruptCount = 0
+        panel.onInterrupt = {
+            interruptCount += 1
+            return true
+        }
+        let event = try XCTUnwrap(
+            NSEvent.keyEvent(
+                with: .keyDown,
+                location: .zero,
+                modifierFlags: [.control, .capsLock, .function],
+                timestamp: 0,
+                windowNumber: 0,
+                context: nil,
+                characters: "c",
+                charactersIgnoringModifiers: "c",
+                isARepeat: false,
+                keyCode: 8
+            )
+        )
+
+        XCTAssertTrue(panel.performKeyEquivalent(with: event))
+        XCTAssertEqual(interruptCount, 1)
+
+        panel.onInterrupt = { false }
+        XCTAssertFalse(panel.performKeyEquivalent(with: event), "Control-C should remain available when no process is running")
     }
 
     func testSearchAccessibilityLabelDescribesFileBrowserDirectory() {

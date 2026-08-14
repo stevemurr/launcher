@@ -6,6 +6,7 @@ enum LauncherItemKind: String, Equatable {
     case launcherSetting = "Launcher"
     case calculator = "Calculator"
     case scriptCommand = "Script Command"
+    case runningShell = "Running Shell"
     case file = "File"
     case directory = "Folder"
 
@@ -16,6 +17,7 @@ enum LauncherItemKind: String, Equatable {
         case .launcherSetting: "slider.horizontal.3"
         case .calculator: "equal"
         case .scriptCommand: "apple.terminal"
+        case .runningShell: "apple.terminal.fill"
         case .file: "doc"
         case .directory: "folder"
         }
@@ -27,6 +29,7 @@ enum LauncherDestination: Equatable {
     case launcherSettings
     case copyText(String)
     case script(ScriptCommand)
+    case shellSession(ShellSessionID)
     case createScript
     case browseDirectory(URL)
 }

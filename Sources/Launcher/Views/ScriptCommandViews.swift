@@ -124,13 +124,13 @@ struct RunChip: View {
                 Text(statusText)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Color.primary.opacity(0.85))
-                if let title = model.scriptRun?.script.title {
-                    Text(title)
+                if !model.displayedRunTitle.isEmpty {
+                    Text(model.displayedRunTitle)
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(Color.secondary)
                         .lineLimit(1)
                 }
-                if model.scriptRun?.phase == .running {
+                if model.displayedRunPhase == .running {
                     KeyCap("⌘")
                     KeyCap("T")
                 }
@@ -141,14 +141,14 @@ struct RunChip: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(model.scriptRun?.phase != .running)
+        .disabled(model.displayedRunPhase != .running)
         .accessibilityIdentifier("footer.runChip")
-        .accessibilityLabel("\(statusText) \(model.scriptRun?.script.title ?? "")")
+        .accessibilityLabel("\(statusText) \(model.displayedRunTitle)")
     }
 
     @ViewBuilder
     private var statusIcon: some View {
-        switch model.scriptRun?.phase {
+        switch model.displayedRunPhase {
         case .running, nil:
             ProgressView()
                 .controlSize(.small)
@@ -170,8 +170,8 @@ struct RunChip: View {
     }
 
     private var statusText: String {
-        switch model.scriptRun?.phase {
-        case .running, nil: "Running script…"
+        switch model.displayedRunPhase {
+        case .running, nil: model.displayedRunIsShell ? "Running command…" : "Running script…"
         case .finished(.success): "Completed"
         case .finished(.cancelled): "Cancelled"
         case let .finished(.failure(exitCode)): "Failed (\(exitCode))"
@@ -187,10 +187,10 @@ struct RunPalette: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 3) {
-                Text("Running script…")
+                Text(model.displayedRunIsShell ? "Running shell command…" : "Running script…")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(Color.secondary)
-                Text(model.scriptRun?.script.title ?? "")
+                Text(model.displayedRunTitle)
                     .font(.system(size: 15, weight: .medium))
                     .lineLimit(1)
             }
@@ -199,7 +199,7 @@ struct RunPalette: View {
             .padding(.bottom, 9)
 
             Button {
-                model.cancelScriptRun()
+                model.cancelCurrentRun()
             } label: {
                 HStack(spacing: 10) {
                     Image(systemName: "xmark.octagon")
@@ -377,14 +377,14 @@ struct ScriptOutputPane: View {
     @ObservedObject var model: LauncherModel
 
     var body: some View {
-        if model.isOutputAvailable, let run = model.scriptRun {
+        if model.isOutputAvailable, hasRun {
             VStack(spacing: 0) {
-                header(for: run)
+                header
                     .frame(height: LauncherStyle.paneHeaderHeight)
 
                 Divider().opacity(0.65)
 
-                outputScroll(for: run)
+                outputScroll
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     // The terminal identity lives where the monospace text is;
                     // the drawer itself keeps normal launcher chrome.
@@ -401,11 +401,13 @@ struct ScriptOutputPane: View {
         }
     }
 
-    private func header(for run: ScriptRunState) -> some View {
+    private var hasRun: Bool { model.shellRun != nil || model.scriptRun != nil }
+
+    private var header: some View {
         HStack(spacing: 8) {
             Image(systemName: "apple.terminal")
                 .font(.system(size: 12, weight: .semibold))
-            Text(run.script.title)
+            Text(model.shellRun == nil ? (model.scriptRun?.script.title ?? "Output") : "Shell")
                 .font(.system(size: 13, weight: .semibold))
                 .lineLimit(1)
             Spacer(minLength: 6)
@@ -420,14 +422,14 @@ struct ScriptOutputPane: View {
         .padding(.horizontal, 14)
     }
 
-    private func outputScroll(for run: ScriptRunState) -> some View {
+    private var outputScroll: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    Text(run.output.isEmpty ? "Waiting for output…" : run.output)
+                    Text(paneOutput.isEmpty ? "Waiting for output…" : paneOutput)
                         .font(.system(size: 12, design: .monospaced))
                         .foregroundStyle(
-                            run.output.isEmpty
+                            paneOutput.isEmpty
                                 ? Color.white.opacity(0.45)
                                 : Color.white.opacity(0.92)
                         )
@@ -440,7 +442,7 @@ struct ScriptOutputPane: View {
                 }
                 .padding(12)
             }
-            .onChange(of: model.scriptRun?.output) { _, _ in
+            .onChange(of: paneOutput) { _, _ in
                 proxy.scrollTo("bottom", anchor: .bottom)
             }
             // Also fires when the drawer opens mid-run, landing at the tail.
@@ -450,8 +452,12 @@ struct ScriptOutputPane: View {
         }
     }
 
+    private var paneOutput: String {
+        model.shellRun?.output ?? model.scriptRun?.output ?? ""
+    }
+
     private var statusText: String {
-        switch model.scriptRun?.phase {
+        switch model.displayedRunPhase {
         case .running: "Running…"
         case .finished(.success): "Exit 0"
         case let .finished(.failure(exitCode)): "Exit \(exitCode)"

@@ -6,7 +6,7 @@ struct LauncherRootView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var panelWidth: CGFloat {
-        model.isOutputPanePresented ? LauncherStyle.expandedPanelWidth : LauncherStyle.panelWidth
+        model.isPanelExpanded ? LauncherStyle.expandedPanelWidth : LauncherStyle.panelWidth
     }
 
     private var drawerAnimation: Animation? {
@@ -85,7 +85,7 @@ struct LauncherRootView: View {
         .animation(paletteAnimation, value: model.isRunPalettePresented)
         .animation(paletteAnimation, value: model.pendingRun)
         .animation(paletteAnimation, value: model.pendingDeletion)
-        .animation(drawerAnimation, value: model.isOutputPanePresented)
+        .animation(drawerAnimation, value: model.panelPresentation)
     }
 }
 
@@ -111,36 +111,64 @@ private struct LauncherSearchView: View {
 
             Divider().opacity(0.65)
 
-            HStack(spacing: 0) {
-                Group {
-                    if model.isFileBrowsing {
-                        FileBrowserList(model: model)
-                    } else {
-                        resultsList
-                    }
-                }
-                .frame(width: resultsRegionWidth)
-                .frame(maxHeight: .infinity)
-
-                if model.isOutputPanePresented {
-                    ScriptOutputPane(model: model)
-                        .frame(width: LauncherStyle.outputPaneWidth)
+            Group {
+                if model.isShellMode {
+                    ShellConsoleView(model: model)
+                        .frame(width: LauncherStyle.expandedPanelWidth)
                         .frame(maxHeight: .infinity)
-                        .overlay(alignment: .leading) {
-                            Rectangle()
-                                .fill(Color.launcherSeparator.opacity(0.65))
-                                .frame(width: 1)
+                } else {
+                    HStack(spacing: 0) {
+                        Group {
+                            if model.isFileBrowsing {
+                                FileBrowserList(model: model)
+                            } else {
+                                resultsList
+                            }
                         }
-                        .transition(outputPaneTransition)
+                        .frame(width: resultsRegionWidth)
+                        .frame(maxHeight: .infinity)
+
+                        if model.isOutputPanePresented {
+                            ScriptOutputPane(model: model)
+                                .frame(width: LauncherStyle.outputPaneWidth)
+                                .frame(maxHeight: .infinity)
+                                .overlay(alignment: .leading) {
+                                    Rectangle()
+                                        .fill(Color.launcherSeparator.opacity(0.65))
+                                        .frame(width: 1)
+                                }
+                                .transition(outputPaneTransition)
+                        }
+                    }
                 }
             }
             .frame(maxHeight: .infinity)
 
             Divider().opacity(0.65)
 
-            footer
+            Group {
+                if model.isShellMode {
+                    shellFooter
+                } else {
+                    footer
+                }
+            }
                 .frame(height: LauncherStyle.footerHeight)
         }
+        .overlay(alignment: .topLeading) {
+            if model.isShellMode, !model.shellCompletions.isEmpty {
+                ShellCompletionPalette(
+                    candidates: model.shellCompletions,
+                    selectedIndex: model.shellCompletionSelectionIndex,
+                    onAccept: { model.acceptShellCompletion(at: $0) }
+                )
+                .padding(.leading, 14)
+                .padding(.top, LauncherStyle.headerHeight + 5)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+                .zIndex(10)
+            }
+        }
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.1), value: model.shellCompletions)
     }
 
     private var searchHeader: some View {
@@ -165,15 +193,25 @@ private struct LauncherSearchView: View {
                 focusToken: model.focusToken,
                 isFocusTarget: model.focusTarget == .search,
                 placeholder: model.searchFieldPlaceholder,
-                accessibilityLabel: LauncherSearchField.contextualAccessibilityLabel(
-                    for: model.browseDirectoryForAccessibility
-                ),
+                accessibilityLabel: model.searchFieldAccessibilityLabel,
                 onFocus: { model.noteFocus(.search) },
                 onCommand: handle
             )
             .frame(height: 32)
 
-            if let script = model.selectedScript, !script.arguments.isEmpty {
+            if model.isShellMode {
+                HStack(spacing: 6) {
+                    Image(systemName: "apple.terminal")
+                        .font(.system(size: 13, weight: .semibold))
+                    Text("Shell")
+                        .font(.system(size: 13, weight: .semibold))
+                }
+                .foregroundStyle(Color.secondary)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 5)
+                .background(Color.primary.opacity(0.07), in: Capsule())
+                .accessibilityIdentifier("header.shellMode")
+            } else if let script = model.selectedScript, !script.arguments.isEmpty {
                 HStack(spacing: 6) {
                     ForEach(Array(script.arguments.enumerated()), id: \.offset) { index, argument in
                         ArgumentTokenBox(model: model, argument: argument, index: index, onCommand: handle)
@@ -215,54 +253,65 @@ private struct LauncherSearchView: View {
     }
 
     private var resultsList: some View {
-        let rowOffset = model.calculation == nil ? 0 : 1
-        let rowCount = model.calculation == nil ? 6 : 4
-        let showsResultsSection = model.calculation == nil || model.results.count > 1
+        let runningShellCount = min(model.runningShellResultCount, model.results.count)
+        let calculatorIndex = model.calculation == nil ? nil : runningShellCount
+        let resultsStartIndex = runningShellCount + (calculatorIndex == nil ? 0 : 1)
+        let showsResultsSection = calculatorIndex == nil || resultsStartIndex < model.results.count
         let isLoadingResults = model.isLoading || model.isFileListingLoading
 
         return VStack(spacing: 0) {
-            if let calculation = model.calculation {
-                sectionHeader("Calculator", showsProgress: false)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        if runningShellCount > 0 {
+                            sectionHeader("Running Shells", showsProgress: false)
 
-                CalculatorCard(
-                    calculation: calculation,
-                    isSelected: model.selectedIndex == 0,
-                    onSelect: { model.select(index: 0) },
-                    onOpen: {
-                        model.select(index: 0)
-                        model.activateSelected()
-                    }
-                )
-            }
-
-            if showsResultsSection {
-                sectionHeader("Results", showsProgress: isLoadingResults)
-
-                ForEach(0..<rowCount, id: \.self) { index in
-                    let resultIndex = index + rowOffset
-                    if model.results.indices.contains(resultIndex) {
-                        ResultRow(
-                            item: model.results[resultIndex],
-                            isSelected: resultIndex == model.selectedIndex,
-                            onSelect: { model.select(index: resultIndex) },
-                            onOpen: {
-                                model.select(index: resultIndex)
-                                model.activateSelected()
+                            ForEach(0..<runningShellCount, id: \.self) { resultIndex in
+                                resultRow(at: resultIndex)
                             }
-                        )
-                    } else if index == 0, rowOffset == 0, !isLoadingResults {
-                        HStack(spacing: 8) {
-                            Image(systemName: "magnifyingglass")
-                            Text("No matching applications or settings")
                         }
-                        .font(.system(size: 14))
-                        .foregroundStyle(Color.secondary)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else {
-                        Color.clear
+
+                        if let calculation = model.calculation, let calculatorIndex,
+                           model.results.indices.contains(calculatorIndex) {
+                            sectionHeader("Calculator", showsProgress: false)
+
+                            CalculatorCard(
+                                calculation: calculation,
+                                isSelected: model.selectedIndex == calculatorIndex,
+                                onSelect: { model.select(index: calculatorIndex) },
+                                onOpen: {
+                                    model.select(index: calculatorIndex)
+                                    model.activateSelected()
+                                }
+                            )
+                            .id(model.results[calculatorIndex].id)
+                        }
+
+                        if showsResultsSection {
+                            sectionHeader("Results", showsProgress: isLoadingResults)
+                        }
+
+                        if resultsStartIndex < model.results.count {
+                            ForEach(resultsStartIndex..<model.results.count, id: \.self) { resultIndex in
+                                resultRow(at: resultIndex)
+                            }
+                        } else if showsResultsSection, !isLoadingResults {
+                            HStack(spacing: 8) {
+                                Image(systemName: "magnifyingglass")
+                                Text("No matching applications or settings")
+                            }
+                            .font(.system(size: 14))
+                            .foregroundStyle(Color.secondary)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 48)
+                        }
                     }
                 }
-                .frame(height: 48)
+                .onChange(of: model.selectedIndex) { _, newIndex in
+                    if model.results.indices.contains(newIndex) {
+                        proxy.scrollTo(model.results[newIndex].id)
+                    }
+                }
             }
 
             HStack(spacing: 8) {
@@ -284,9 +333,21 @@ private struct LauncherSearchView: View {
             }
             .padding(.horizontal, 16)
             .frame(height: 44)
-
-            Spacer(minLength: 0)
         }
+    }
+
+    private func resultRow(at index: Int) -> some View {
+        ResultRow(
+            item: model.results[index],
+            isSelected: index == model.selectedIndex,
+            onSelect: { model.select(index: index) },
+            onOpen: {
+                model.select(index: index)
+                model.activateSelected()
+            }
+        )
+        .frame(height: 48)
+        .id(model.results[index].id)
     }
 
     private func sectionHeader(_ title: String, showsProgress: Bool) -> some View {
@@ -369,7 +430,103 @@ private struct LauncherSearchView: View {
         .background(Color.launcherControlSurface.opacity(0.20))
     }
 
+    private var shellFooter: some View {
+        HStack(spacing: 10) {
+            Button {
+                model.showSettings()
+            } label: {
+                Image(systemName: "command.square.fill")
+                    .font(.system(size: 16, weight: .semibold))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(Color.secondary.opacity(0.74))
+                    .frame(width: 26, height: 26)
+            }
+            .buttonStyle(.plain)
+            .help("Launcher Settings")
+            .accessibilityIdentifier("footer.settings")
+
+            if model.canStopShellSession {
+                Button {
+                    model.cancelCurrentRun()
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "stop.fill")
+                            .font(.system(size: 11, weight: .bold))
+                        Text("Stop")
+                            .font(.system(size: 13, weight: .semibold))
+                        KeyCap("⌃C")
+                    }
+                    .foregroundStyle(Color.red)
+                }
+                .buttonStyle(.plain)
+                .help("Interrupt Running Command (Control-C)")
+                .accessibilityIdentifier("shell.stop")
+            }
+
+            Spacer()
+
+            Text(shellFooterStatus)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color.secondary)
+                .accessibilityIdentifier("shell.footer.status")
+                .accessibilityHidden(true)
+
+            Rectangle()
+                .fill(Color.launcherSeparator)
+                .frame(width: 1, height: 14)
+
+            Button {
+                model.handleSubmit()
+            } label: {
+                HStack(spacing: 7) {
+                    Text(ShellInputPresentation.primaryActionTitle(for: model.shellInputMode))
+                        .font(.system(size: 13, weight: .semibold))
+                    KeyCap("↩")
+                }
+                .foregroundStyle(Color.primary.opacity(0.92))
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("shell.run")
+            .accessibilityLabel(ShellInputPresentation.primaryActionTitle(for: model.shellInputMode))
+        }
+        .padding(.horizontal, 12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.launcherControlSurface.opacity(0.20))
+    }
+
+    private var shellFooterStatus: String {
+        if let sessionPhase = model.shellRun?.sessionPhase {
+            switch sessionPhase {
+            case .starting: return "Starting…"
+            case .ready: return "Ready"
+            case .foreground: return "Running…"
+            case .closing: return "Closing…"
+            }
+        }
+        return switch model.displayedRunPhase {
+        case .running: "Running…"
+        case .finished(.success): "Exit 0"
+        case let .finished(.failure(exitCode)): "Exit \(exitCode)"
+        case .finished(.cancelled): "Cancelled"
+        case .finished(.failedToStart): "Failed to start"
+        case nil: "Ready"
+        }
+    }
+
     private func handle(_ command: LauncherKeyCommand) {
+        if let completionAction = ShellCompletionKeyboardAction.resolve(
+            command,
+            isShellMode: model.isShellMode,
+            hasCandidates: !model.shellCompletions.isEmpty
+        ) {
+            switch completionAction {
+            case let .request(backward): model.requestShellCompletion(backward: backward)
+            case let .move(offset): model.moveShellCompletion(by: offset)
+            case .accept: model.acceptShellCompletion()
+            }
+            return
+        }
+
         switch command {
         case .moveDown: model.moveSelection(by: 1)
         case .moveUp: model.moveSelection(by: -1)
@@ -399,6 +556,8 @@ private struct LauncherSearchView: View {
             if model.availableActions.contains(.copyPath) { model.perform(.copyPath) }
         case .copyScriptContents:
             if model.availableActions.contains(.copyScriptContents) { model.perform(.copyScriptContents) }
+        case .interruptRun:
+            model.cancelCurrentRun()
         }
     }
 
@@ -409,9 +568,113 @@ private struct LauncherSearchView: View {
         case .launcherSetting: item.destination == .createScript ? "Open Command" : "Open Launcher Settings"
         case .calculator: "Copy Answer"
         case .scriptCommand: "Run Script"
+        case .runningShell: "Resume Shell"
         case .file: "Open File"
         case .directory: item.id == "file.icloud" ? "Open iCloud" : "Open Directory"
         }
+    }
+}
+
+enum ShellInputPresentation {
+    static func primaryActionTitle(for inputMode: ShellInputMode) -> String {
+        switch inputMode {
+        case .idle: "Run Command"
+        case .foreground: "Send Input"
+        }
+    }
+}
+
+enum ShellCompletionKeyboardAction: Equatable {
+    case request(backward: Bool)
+    case move(offset: Int)
+    case accept
+
+    static func resolve(
+        _ command: LauncherKeyCommand,
+        isShellMode: Bool,
+        hasCandidates: Bool
+    ) -> ShellCompletionKeyboardAction? {
+        guard isShellMode else { return nil }
+        switch command {
+        case .focusNext:
+            return hasCandidates ? .move(offset: 1) : .request(backward: false)
+        case .focusPrevious:
+            return hasCandidates ? .move(offset: -1) : .request(backward: true)
+        case .moveDown where hasCandidates:
+            return .move(offset: 1)
+        case .moveUp where hasCandidates:
+            return .move(offset: -1)
+        case .submit where hasCandidates:
+            return .accept
+        default:
+            return nil
+        }
+    }
+}
+
+struct ShellCompletionPalette: View {
+    let candidates: [String]
+    let selectedIndex: Int
+    let onAccept: (Int) -> Void
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: 2) {
+                    ForEach(Array(candidates.enumerated()), id: \.offset) { index, candidate in
+                        Button {
+                            onAccept(index)
+                        } label: {
+                            HStack(spacing: 9) {
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 9, weight: .bold))
+                                    .foregroundStyle(index == selectedIndex ? Color.accentColor : Color.secondary)
+                                    .frame(width: 12)
+                                Text(candidate)
+                                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                                    .foregroundStyle(Color.primary.opacity(0.92))
+                                    .lineLimit(1)
+                                Spacer(minLength: 8)
+                                if index == selectedIndex {
+                                    KeyCap("↩")
+                                }
+                            }
+                            .padding(.horizontal, 10)
+                            .frame(height: 30)
+                            .contentShape(Rectangle())
+                            .background(
+                                index == selectedIndex ? Color.accentColor.opacity(0.13) : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .id(index)
+                        .accessibilityIdentifier("shell.completion.\(index)")
+                        .accessibilityLabel(candidate)
+                        .accessibilityValue(index == selectedIndex ? "Selected" : "")
+                    }
+                }
+                .padding(5)
+            }
+            .frame(width: 560, height: min(CGFloat(candidates.count * 32 + 10), 202))
+            .onChange(of: selectedIndex) { _, newIndex in
+                guard candidates.indices.contains(newIndex) else { return }
+                proxy.scrollTo(newIndex, anchor: .center)
+            }
+        }
+        .background {
+            VisualEffectView(material: .popover, blendingMode: .withinWindow)
+                .overlay(Color.launcherSurface.opacity(0.72))
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color.launcherSeparator.opacity(0.92), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.24), radius: 14, y: 6)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("shell.completions")
+        .accessibilityLabel("Shell completions")
     }
 }
 
@@ -631,6 +894,7 @@ private struct ActionsPalette: View {
             return model.actionsTarget?.destination == .createScript ? "Open Command" : "Open Launcher Settings"
         case .calculator: return "Copy Answer"
         case .scriptCommand: return "Run Script"
+        case .runningShell: return "Resume Shell"
         case .file: return "Open File"
         case .directory: return model.actionsTarget?.id == "file.icloud" ? "Open iCloud" : "Open Directory"
         case nil: return action.title

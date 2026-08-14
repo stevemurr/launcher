@@ -21,6 +21,49 @@ final class LauncherLayoutTests: XCTestCase {
         )
     }
 
+    /// Shell mode borrows the drawer's expanded window size, but replaces the
+    /// split results/output layout with one console spanning the whole body.
+    @MainActor
+    func testShellModeUsesTheExpandedPanelWidthBeforeACommandRuns() {
+        let suite = "LauncherLayoutTests-Shell-\(UUID().uuidString)"
+        let settings = LauncherSettings(defaults: UserDefaults(suiteName: suite)!)
+        let model = LauncherModel(settings: settings, isUITesting: true)
+        model.query = ">"
+        XCTAssertTrue(model.isShellMode)
+        XCTAssertEqual(model.query, "", "the trigger is not visible shell input")
+
+        let hosting = NSHostingView(rootView: LauncherRootView(model: model))
+        hosting.layoutSubtreeIfNeeded()
+
+        XCTAssertEqual(hosting.fittingSize.width, LauncherStyle.expandedPanelWidth)
+        XCTAssertEqual(hosting.fittingSize.height, LauncherStyle.panelHeight)
+    }
+
+    @MainActor
+    func testShellCompletionPaletteStaysCompactAndCapsItsVisibleRows() {
+        let shortPalette = NSHostingView(
+            rootView: ShellCompletionPalette(
+                candidates: ["git checkout", "git cherry-pick"],
+                selectedIndex: 0,
+                onAccept: { _ in }
+            )
+        )
+        let longPalette = NSHostingView(
+            rootView: ShellCompletionPalette(
+                candidates: (0..<20).map { "candidate-\($0)" },
+                selectedIndex: 12,
+                onAccept: { _ in }
+            )
+        )
+        shortPalette.layoutSubtreeIfNeeded()
+        longPalette.layoutSubtreeIfNeeded()
+
+        XCTAssertEqual(shortPalette.fittingSize.width, 560)
+        XCTAssertEqual(shortPalette.fittingSize.height, 74)
+        XCTAssertEqual(longPalette.fittingSize.width, 560)
+        XCTAssertEqual(longPalette.fittingSize.height, 202)
+    }
+
     /// The results region shrinks as the window grows, so the pane costs the
     /// screen less than its own width.
     func testPaneCostsLessScreenThanItsWidth() {

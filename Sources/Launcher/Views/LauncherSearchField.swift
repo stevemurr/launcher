@@ -19,6 +19,7 @@ enum LauncherKeyCommand: Equatable {
     case showInFinder
     case copyPath
     case copyScriptContents
+    case interruptRun
 
     var acceptsKeyRepeat: Bool {
         self == .moveUp || self == .moveDown
@@ -75,7 +76,7 @@ struct LauncherSearchField: NSViewRepresentable {
     }
 
     func updateNSView(_ field: KeyHandlingTextField, context: Context) {
-        if field.stringValue != text { field.stringValue = text }
+        field.replaceTextIfNeeded(text)
         if field.placeholderString != placeholder { field.placeholderString = placeholder }
         field.setAccessibilityLabel(accessibilityLabel)
         field.onCommand = onCommand
@@ -100,8 +101,16 @@ struct LauncherSearchField: NSViewRepresentable {
         }
 
         func controlTextDidChange(_ notification: Notification) {
-            guard let field = notification.object as? NSTextField else { return }
+            guard let field = notification.object as? KeyHandlingTextField else { return }
             parent.text = field.stringValue
+
+            // The model may normalize a launcher gesture synchronously (most
+            // notably consuming the leading `>` that enters Shell mode). A
+            // live AppKit field editor otherwise keeps its pre-normalized text
+            // until SwiftUI's next update pass, so fast typing can append onto
+            // the stale trigger. Reconcile immediately and leave the caret at
+            // the end of the model-owned value.
+            field.replaceTextIfNeeded(parent.text)
         }
 
         // While editing, plain arrow keys are consumed by the field editor
@@ -135,6 +144,19 @@ final class KeyHandlingTextField: NSTextField {
         return super.performKeyEquivalent(with: event)
     }
 
+    /// `stringValue` alone does not update AppKit's live field editor. Shell
+    /// history and completion both replace model-owned text while this field
+    /// remains first responder, so keep the editor in sync and place the caret
+    /// after the accepted value.
+    func replaceTextIfNeeded(_ text: String) {
+        let editor = currentEditor() as? NSTextView
+        guard stringValue != text || editor?.string != text else { return }
+        stringValue = text
+        guard let editor, editor.string != text else { return }
+        editor.string = text
+        editor.setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
+    }
+
     private func handle(_ event: NSEvent) -> Bool {
         let characters = event.charactersIgnoringModifiers?.lowercased()
         let command: LauncherKeyCommand
@@ -150,6 +172,8 @@ final class KeyHandlingTextField: NSTextField {
             command = .editScript
         } else if event.modifierFlags.contains(.control), characters == "x" {
             command = .deleteScript
+        } else if event.modifierFlags.contains(.control), characters == "c" {
+            command = .interruptRun
         } else if event.modifierFlags.contains(.command),
                   event.modifierFlags.contains(.option),
                   characters == "c" {

@@ -487,6 +487,26 @@ final class LauncherModelScriptTests: XCTestCase {
         XCTAssertTrue(model.scriptRun?.output.contains("boom") == true)
     }
 
+    func testEnteringShellModeDismissesPendingScriptConfirmation() throws {
+        try writeScript(
+            "shell-switch.sh",
+            header: "# @raycast.title Shell Switch\n# @raycast.needsConfirmation true",
+            body: "echo should-not-run"
+        )
+        let model = makeModel()
+        waitForScripts(in: model, query: "shell switch")
+        model.select(index: model.results.firstIndex { $0.kind == .scriptCommand }!)
+        model.handleSubmit()
+        XCTAssertNotNil(model.pendingRun)
+
+        model.query = "> echo shell"
+
+        XCTAssertNil(model.pendingRun)
+        XCTAssertTrue(model.isShellMode)
+        XCTAssertEqual(model.query, "echo shell")
+        XCTAssertNil(model.scriptRun)
+    }
+
     func testRequiredArgumentGateAndPassing() throws {
         try writeScript(
             "arg.sh",

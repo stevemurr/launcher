@@ -7,6 +7,14 @@ enum LauncherScreen {
     case createScript
 }
 
+enum LauncherPanelPresentation: Equatable {
+    case compact
+    case outputDrawer
+    case shellConsole
+
+    var isExpanded: Bool { self != .compact }
+}
+
 enum LauncherFocusTarget: Equatable {
     case search
     case argument(Int)
@@ -21,6 +29,29 @@ struct ScriptRunState: Equatable {
     let script: ScriptCommand
     var phase: ScriptRunPhase
     var output: String
+}
+
+struct ShellRunState: Equatable {
+    let id: ShellSessionID
+    var command: String
+    /// Last foreground-command status, retained for the console badge and for
+    /// source compatibility with the previous one-shot run model.
+    var phase: ScriptRunPhase
+    /// Lifetime state of the persistent shell itself.
+    var sessionPhase: ShellSessionPhase
+    var output: String
+    var didTruncateOutput: Bool
+    var workingDirectory: String
+
+    var lastResult: ScriptRunResult? {
+        guard case let .finished(result) = phase else { return nil }
+        return result
+    }
+}
+
+enum ShellInputMode: Equatable {
+    case idle
+    case foreground
 }
 
 struct PendingScriptRun: Equatable {
@@ -96,6 +127,13 @@ struct OpenWithCandidate: Equatable, Identifiable {
 private struct SelectedScriptArgumentState: Equatable {
     let scriptID: String
     let schema: [ScriptArgument]
+}
+
+private struct PendingShellCompletionRequest {
+    let input: String
+    let cursorUTF16: Int
+    let requestID: ShellCompletionRequestID
+    let selectsLastCandidate: Bool
 }
 
 /// Synchronous filesystem work cannot always be interrupted once the kernel or
@@ -233,6 +271,22 @@ final class LauncherModel: ObservableObject {
     @Published var query = "" {
         didSet {
             guard query != oldValue else { return }
+            if isConsumingShellTrigger { return }
+
+            if !isShellMode, query.hasPrefix(">") {
+                enterShellMode(consuming: query)
+                return
+            }
+            if isShellMode, isAwaitingShellSeparator {
+                isAwaitingShellSeparator = false
+                if query.hasPrefix(" ") {
+                    isConsumingShellTrigger = true
+                    query.removeFirst()
+                    isConsumingShellTrigger = false
+                    refreshResults(resetSelection: true)
+                    return
+                }
+            }
             if isActionsPresented {
                 isActionsPresented = false
                 actionsTarget = nil
@@ -241,8 +295,18 @@ final class LauncherModel: ObservableObject {
                 isOpenWithPresented = false
                 openWithTarget = nil
             }
+            if isShellMode, !isApplyingShellHistory {
+                resetShellHistoryNavigation()
+            }
+            if isShellMode {
+                dismissShellCompletion()
+            }
             refreshResults(resetSelection: true)
-            clearFinishedRun()
+            if isShellMode {
+                clearFinishedScriptRun()
+            } else {
+                clearFinishedRuns()
+            }
         }
     }
     @Published private(set) var results: [LauncherItem] = []
@@ -251,7 +315,7 @@ final class LauncherModel: ObservableObject {
     @Published var screen: LauncherScreen = .search {
         didSet {
             // Settings and Create Script render at full window width.
-            if screen != .search { dismissOutputPane() }
+            if screen != .search { setPanelPresentation(.compact) }
         }
     }
     @Published var isActionsPresented = false
@@ -263,14 +327,12 @@ final class LauncherModel: ObservableObject {
     @Published var launchAtLoginError: String?
 
     @Published private(set) var scriptRun: ScriptRunState?
-    @Published private(set) var isOutputPanePresented = false {
-        didSet {
-            guard isOutputPanePresented != oldValue else { return }
-            // Must stay synchronous: showLauncher() relies on the panel having
-            // already shrunk before positionPanel() centers it.
-            onOutputPanePresentationChange?(isOutputPanePresented)
-        }
-    }
+    @Published private(set) var isShellMode = false
+    @Published private(set) var shellSessions: [ShellRunState] = []
+    @Published private(set) var selectedShellSessionID: ShellSessionID?
+    @Published private(set) var shellCompletions: [String] = []
+    @Published private(set) var shellCompletionSelectionIndex = 0
+    @Published private(set) var panelPresentation: LauncherPanelPresentation = .compact
     @Published var isRunPalettePresented = false
     @Published private(set) var pendingRun: PendingScriptRun?
     @Published private(set) var focusTarget: LauncherFocusTarget = .search
@@ -313,6 +375,7 @@ final class LauncherModel: ObservableObject {
     private let isUITesting: Bool
     private let loginItems: LoginItemService
     private let scriptRunner: ScriptRunning
+    private let shellSessionManager: PersistentShellSessionManaging
     private let scriptsDirectoryOverride: URL?
     private let browseHomeOverride: URL?
     private let fileListingResolver: (FileBrowserSession?, String, URL) -> FileListing?
@@ -328,6 +391,17 @@ final class LauncherModel: ObservableObject {
     private var fileListingRequest: LatestPendingExecutionRequest?
     private var scriptScanRequest: LatestPendingExecutionRequest?
     private var selectedScriptArgumentState: SelectedScriptArgumentState?
+    private var shellHistory: [String] = []
+    private var shellHistoryIndex = 0
+    private var shellHistoryDraft = ""
+    private var isApplyingShellHistory = false
+    private var isConsumingShellTrigger = false
+    private var isAwaitingShellSeparator = false
+    private var activeShellCompletionRequestID: ShellCompletionRequestID?
+    private var shellCompletionReplacementRange: Range<Int>?
+    private var shellCompletionSelectsLastCandidate = false
+    private var pendingShellCommands: [ShellSessionID: String] = [:]
+    private var pendingShellCompletionRequests: [ShellSessionID: PendingShellCompletionRequest] = [:]
     private let launcherSettingsItem = LauncherItem(
         id: "launcher.settings",
         title: "Launcher Settings",
@@ -350,15 +424,34 @@ final class LauncherModel: ObservableObject {
         isUITesting: Bool = false,
         loginItems: LoginItemService? = nil,
         scriptRunner: ScriptRunning? = nil,
+        shellRunner: ShellCommandRunning? = nil,
+        shellJobManager: ShellJobManaging? = nil,
+        shellSessionManager: PersistentShellSessionManaging? = nil,
         browseHome: URL? = nil,
         resolvesFileListingsSynchronously: Bool? = nil,
         fileListingResolver: ((FileBrowserSession?, String, URL) -> FileListing?)? = nil,
         scriptDiscoverer: ((URL) -> [ScriptCommand])? = nil
     ) {
+        let defaultProcessRunner = ProcessScriptRunner()
         self.settings = settings
         self.isUITesting = isUITesting
         self.loginItems = loginItems ?? (isUITesting ? InMemoryLoginItemService() : AppLoginItemService())
-        self.scriptRunner = scriptRunner ?? ProcessScriptRunner()
+        self.scriptRunner = scriptRunner ?? defaultProcessRunner
+        if let shellSessionManager {
+            self.shellSessionManager = shellSessionManager
+        } else if let shellJobManager {
+            self.shellSessionManager = LegacyPersistentShellSessionManager(jobManager: shellJobManager)
+        } else if let shellRunner {
+            self.shellSessionManager = LegacyPersistentShellSessionManager(
+                jobManager: SingleRunnerShellJobManager(runner: shellRunner)
+            )
+        } else if let sharedRunner = scriptRunner as? ShellCommandRunning {
+            self.shellSessionManager = LegacyPersistentShellSessionManager(
+                jobManager: SingleRunnerShellJobManager(runner: sharedRunner)
+            )
+        } else {
+            self.shellSessionManager = ProcessPersistentShellSessionManager()
+        }
         self.scriptsDirectoryOverride = isUITesting ? Self.writeUITestFixtureScripts() : nil
         self.browseHomeOverride = browseHome ?? (isUITesting ? Self.writeUITestFixtureFiles() : nil)
         self.resolvesFileListingsSynchronously = resolvesFileListingsSynchronously
@@ -370,9 +463,41 @@ final class LauncherModel: ObservableObject {
         refreshResults(resetSelection: true)
     }
 
+    var shellRun: ShellRunState? {
+        guard let selectedShellSessionID else { return nil }
+        return shellSessions.first { $0.id == selectedShellSessionID }
+    }
+
+    var shellInputMode: ShellInputMode {
+        shellRun?.sessionPhase == .foreground ? .foreground : .idle
+    }
+
+    var shellWorkingDirectoryDisplay: String {
+        guard let directory = shellRun?.workingDirectory, !directory.isEmpty else { return "~" }
+        return displayShellDirectory(directory)
+    }
+
+    private func displayShellDirectory(_ directory: String) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        if directory == home { return "~" }
+        if directory.hasPrefix(home + "/") { return "~" + directory.dropFirst(home.count) }
+        return directory
+    }
+
     var selectedItem: LauncherItem? {
+        guard !isShellMode else { return nil }
         guard results.indices.contains(selectedIndex) else { return nil }
         return results[selectedIndex]
+    }
+
+    var isPanelExpanded: Bool { panelPresentation.isExpanded }
+
+    var isOutputPanePresented: Bool { panelPresentation == .outputDrawer }
+
+    /// Running shell rows are always a contiguous prefix of ordinary search
+    /// results so the view can render them in their own pinned section.
+    var runningShellResultCount: Int {
+        results.prefix { $0.kind == .runningShell }.count
     }
 
     var selectedScript: ScriptCommand? {
@@ -391,13 +516,14 @@ final class LauncherModel: ObservableObject {
         }
     }
 
-    var isFileBrowsing: Bool { isFileListingLoading || fileListing != nil }
+    var isFileBrowsing: Bool { !isShellMode && (isFileListingLoading || fileListing != nil) }
 
     /// The directory represented by the file-browser UI, including the brief
     /// interval after a derived path query starts but before its async listing
     /// arrives. Keeping this available lets VoiceOver describe the pending file
     /// search instead of falling back to applications and settings.
     var browseDirectoryForAccessibility: URL? {
+        guard !isShellMode else { return nil }
         if let browseSession { return browseSession.current }
         if let fileListing { return fileListing.directory }
         guard isFileListingLoading else { return nil }
@@ -405,9 +531,23 @@ final class LauncherModel: ObservableObject {
     }
 
     var searchFieldPlaceholder: String {
+        if isShellMode {
+            if shellInputMode == .foreground {
+                let command = shellRun?.command.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                return command.isEmpty ? "Send input…" : "Send input to \(command)…"
+            }
+            return "Enter a shell command…"
+        }
         guard let session = browseSession else { return "Search applications and settings" }
         let path = session.current.path
         return "Search in \(path == "/" ? "/" : path + "/")…"
+    }
+
+    var searchFieldAccessibilityLabel: String {
+        if isShellMode {
+            return shellInputMode == .foreground ? "Shell standard input" : "Shell command"
+        }
+        return LauncherSearchField.contextualAccessibilityLabel(for: browseDirectoryForAccessibility)
     }
 
     var effectiveScriptsDirectory: URL {
@@ -415,11 +555,36 @@ final class LauncherModel: ObservableObject {
     }
 
     /// The chip lives exactly as long as the run it describes.
-    var isRunChipVisible: Bool { scriptRun != nil }
+    var isRunChipVisible: Bool { scriptRun != nil || (isShellMode && shellRun != nil) }
+
+    var displayedRunPhase: ScriptRunPhase? {
+        if let shellRun {
+            // The command's result remains in `phase` for transcript/testing,
+            // but the persistent session is once again usable at `.ready`.
+            return shellRun.sessionPhase == .ready ? nil : shellRun.phase
+        }
+        return scriptRun?.phase
+    }
+
+    var displayedRunTitle: String {
+        if let shellRun { return shellRun.command }
+        return scriptRun?.script.title ?? ""
+    }
+
+    var displayedRunIsShell: Bool { shellRun != nil }
+
+    /// A foreground command is interrupted in place. A shell that has not
+    /// reached its first prompt is different: there is no foreground command
+    /// to signal, so Stop closes the whole unusable session instead.
+    var canStopShellSession: Bool {
+        guard isShellMode, let phase = shellRun?.sessionPhase else { return false }
+        return phase == .starting || phase == .foreground
+    }
 
     /// Whether there is output worth showing in the ⌘P pane. Silent scripts opt
     /// out of output entirely, so the pane stays empty even while one runs.
     var isOutputAvailable: Bool {
+        if shellRun != nil { return true }
         guard let run = scriptRun else { return false }
         return run.script.mode != .silent
     }
@@ -474,14 +639,21 @@ final class LauncherModel: ObservableObject {
         pendingRun = nil
         pendingDeletion = nil
         editingScriptURL = nil
-        dismissOutputPane()
+        setPanelPresentation(.compact)
         focusTarget = .search
         browseSession = nil
+        if isShellMode {
+            discardSelectedShellIfFinished()
+            isShellMode = false
+            selectedShellSessionID = nil
+            dismissShellCompletion()
+            resetShellHistoryNavigation()
+        }
         rescanScripts()
         // query.didSet is guarded against no-op assignments, so a launcher
         // dismissed with an empty query would otherwise reopen still showing
         // the last run's chip.
-        clearFinishedRun()
+        clearFinishedRuns()
         if query.isEmpty {
             // query.didSet is guarded against no-op assignments. Refreshing
             // here is essential when Launcher was hidden from sticky browse
@@ -498,6 +670,15 @@ final class LauncherModel: ObservableObject {
     }
 
     func moveSelection(by offset: Int) {
+        if isShellMode {
+            if !shellCompletions.isEmpty {
+                moveShellCompletion(by: offset)
+                return
+            }
+            guard shellInputMode == .idle else { return }
+            moveShellHistory(by: offset)
+            return
+        }
         if isOpenWithPresented {
             guard !openWithApps.isEmpty else { return }
             openWithSelectionIndex = (openWithSelectionIndex + offset + openWithApps.count) % openWithApps.count
@@ -526,6 +707,10 @@ final class LauncherModel: ObservableObject {
     }
 
     func handleSubmit() {
+        if isShellMode {
+            submitShellCommand()
+            return
+        }
         if isOpenWithPresented {
             confirmOpenWith()
             return
@@ -575,6 +760,8 @@ final class LauncherModel: ObservableObject {
             isActionsPresented = false
         case let .browseDirectory(url):
             descend(into: url)
+        case let .shellSession(id):
+            resumeShellSession(id: id)
         }
     }
 
@@ -589,6 +776,7 @@ final class LauncherModel: ObservableObject {
         isActionsPresented = false
         actionsTarget = nil
         editingScriptURL = nil
+        setPanelPresentation(isShellMode ? .shellConsole : .compact)
         focusToken += 1
     }
 
@@ -609,6 +797,10 @@ final class LauncherModel: ObservableObject {
             focusSearch()
         } else if isOutputPanePresented {
             dismissOutputPane()
+        } else if screen == .search, isShellMode, !shellCompletions.isEmpty {
+            dismissShellCompletion()
+        } else if screen == .search, isShellMode {
+            exitShellMode()
         } else if isFileBrowsing {
             ascendOrExitBrowse()
         } else if screen != .search {
@@ -619,6 +811,7 @@ final class LauncherModel: ObservableObject {
     }
 
     func toggleActions() {
+        guard !isShellMode else { return }
         if isActionsPresented {
             isActionsPresented = false
             actionsTarget = nil
@@ -920,7 +1113,8 @@ final class LauncherModel: ObservableObject {
         // Application/script catalog updates are unrelated to the file rows
         // already on screen. Refreshing while browsing would cancel and repeat
         // a potentially slow network-directory enumeration.
-        guard browseSession == nil,
+        guard !isShellMode,
+              browseSession == nil,
               !FileBrowserEngine.isPathLike(query.trimmingCharacters(in: .whitespacesAndNewlines))
         else { return }
         refreshResults(resetSelection: false, preserving: selectedID)
@@ -1026,11 +1220,14 @@ final class LauncherModel: ObservableObject {
     }
 
     private func startRun(script: ScriptCommand, arguments: [String]) {
-        guard !scriptRunner.isRunning else {
+        guard scriptRun?.phase != .running,
+              !scriptRunner.isRunning else {
             NSSound.beep()
             isRunPalettePresented = true
             return
         }
+        discardSelectedShellIfFinished()
+        selectedShellSessionID = nil
         runGeneration += 1
         let generation = runGeneration
         scriptRun = ScriptRunState(script: script, phase: .running, output: "")
@@ -1055,19 +1252,58 @@ final class LauncherModel: ObservableObject {
         scriptRunner.cancel()
     }
 
+    func cancelShellCommand() {
+        guard let id = selectedShellSessionID,
+              let index = shellSessions.firstIndex(where: { $0.id == id }) else { return }
+        switch shellSessions[index].sessionPhase {
+        case .starting:
+            // Startup files are arbitrary user code and can block forever.
+            // Closing is the only meaningful cancellation before the first
+            // Ready event; publish it immediately so Stop cannot appear stuck
+            // while the service performs graceful-then-forced teardown.
+            shellSessions[index].sessionPhase = .closing
+            pendingShellCommands[id] = nil
+            pendingShellCompletionRequests[id] = nil
+            dismissShellCompletion()
+            shellSessionManager.closeSession(id)
+        case .foreground:
+            shellSessionManager.interruptForeground(in: id)
+        case .ready, .closing:
+            break
+        }
+    }
+
+    func cancelCurrentRun() {
+        if canStopShellSession {
+            cancelShellCommand()
+        } else if scriptRun?.phase == .running {
+            scriptRunner.cancel()
+        }
+    }
+
+    var hasRunningProcess: Bool {
+        scriptRun?.phase == .running || canStopShellSession
+    }
+
+    func terminateRunningProcess() {
+        shellSessionManager.terminateAllImmediately()
+        scriptRunner.terminateImmediately()
+    }
+
     func toggleRunPalette() {
-        guard scriptRun?.phase == .running else { return }
+        guard displayedRunPhase == .running else { return }
         isRunPalettePresented.toggle()
     }
 
     func toggleOutputPane() {
+        guard !isShellMode else { return }
         // Never toggle out from under a modal confirmation.
         guard isOutputPanePresented || (pendingRun == nil && pendingDeletion == nil) else { return }
         if !isOutputPanePresented, isActionsPresented {
             isActionsPresented = false
             actionsTarget = nil
         }
-        isOutputPanePresented.toggle()
+        setPanelPresentation(isOutputPanePresented ? .compact : .outputDrawer)
         // Deliberately no focusSearch() here, matching toggleActions() and
         // toggleRunPalette(): focusSearch() re-selects the whole query, so the
         // next keystroke would wipe what the user typed. Nothing in the pane is
@@ -1076,17 +1312,39 @@ final class LauncherModel: ObservableObject {
     }
 
     func dismissOutputPane() {
-        isOutputPanePresented = false
+        guard isOutputPanePresented else { return }
+        setPanelPresentation(.compact)
+    }
+
+    private func setPanelPresentation(_ presentation: LauncherPanelPresentation) {
+        guard panelPresentation != presentation else { return }
+        let wasExpanded = panelPresentation.isExpanded
+        panelPresentation = presentation
+        let isExpanded = presentation.isExpanded
+        guard wasExpanded != isExpanded else { return }
+        // Must stay synchronous: showLauncher() relies on the panel having
+        // already shrunk before positionPanel() centers it.
+        onOutputPanePresentationChange?(isExpanded)
     }
 
     /// Drops a run that has already completed, along with the pane showing it.
     /// A *running* run is left alone: losing the chip would strand the process
     /// with no ⌘T cancel affordance, and closing a live stream because the user
     /// typed would be hostile.
-    private func clearFinishedRun() {
+    private func clearFinishedScriptRun() {
         guard let run = scriptRun, run.phase != .running else { return }
         scriptRun = nil
-        dismissOutputPane()
+        if shellRun == nil { dismissOutputPane() }
+    }
+
+    private func clearFinishedShellRun() {
+        discardSelectedShellIfFinished()
+        if shellRun == nil, scriptRun == nil { dismissOutputPane() }
+    }
+
+    private func clearFinishedRuns() {
+        clearFinishedScriptRun()
+        clearFinishedShellRun()
     }
 
     private static let outputCharacterCap = 100_000
@@ -1109,6 +1367,481 @@ final class LauncherModel: ObservableObject {
         run.phase = .finished(result)
         scriptRun = run
         isRunPalettePresented = false
+    }
+
+    // MARK: - Shell commands
+
+    private var shellCommandDraft: String {
+        isShellMode ? query : ""
+    }
+
+    /// `>` is a launcher gesture, not part of the command prompt. Consume it
+    /// (and one optional visual separator) while keeping the same AppKit text
+    /// field mounted so first-responder and caret state remain stable.
+    private func enterShellMode(consuming triggeredInput: String) {
+        var draft = String(triggeredInput.dropFirst())
+        if draft.first == " " { draft.removeFirst() }
+
+        isActionsPresented = false
+        actionsTarget = nil
+        isOpenWithPresented = false
+        openWithTarget = nil
+        pendingRun = nil
+        pendingDeletion = nil
+        isRunPalettePresented = false
+        selectedShellSessionID = nil
+        dismissShellCompletion()
+        isShellMode = true
+        // Normal typing reports `>` and its following space as separate AppKit
+        // edits. Remember the bare trigger so the next edit can consume that
+        // conventional separator just like a pasted `> command` string.
+        isAwaitingShellSeparator = triggeredInput == ">"
+        resetShellHistoryNavigation()
+
+        isConsumingShellTrigger = true
+        query = draft
+        isConsumingShellTrigger = false
+
+        refreshResults(resetSelection: true)
+        clearFinishedScriptRun()
+    }
+
+    private func exitShellMode() {
+        guard isShellMode else { return }
+        discardSelectedShellIfFinished()
+        // A live job remains in `shellSessions` and is discoverable through the
+        // Running Shells section, but it is no longer the displayed run once its
+        // console closes. This keeps global run/output shortcuts from binding to
+        // a hidden shell; selecting its result establishes the selection again.
+        selectedShellSessionID = nil
+        dismissShellCompletion()
+        isShellMode = false
+        isAwaitingShellSeparator = false
+        resetShellHistoryNavigation()
+
+        isConsumingShellTrigger = true
+        query = ""
+        isConsumingShellTrigger = false
+        refreshResults(resetSelection: true)
+    }
+
+    func resumeShellSession(id: ShellJobID) {
+        resumeShellSession(id: ShellSessionID(rawValue: id.rawValue))
+    }
+
+    func resumeShellSession(id: ShellSessionID) {
+        guard shellSessions.contains(where: { $0.id == id && $0.sessionPhase != .closing }) else {
+            refreshResults(resetSelection: true)
+            return
+        }
+
+        isActionsPresented = false
+        actionsTarget = nil
+        isOpenWithPresented = false
+        openWithTarget = nil
+        pendingRun = nil
+        pendingDeletion = nil
+        isRunPalettePresented = false
+        selectedShellSessionID = id
+        isShellMode = true
+        isAwaitingShellSeparator = false
+        resetShellHistoryNavigation()
+        dismissShellCompletion()
+
+        isConsumingShellTrigger = true
+        query = ""
+        isConsumingShellTrigger = false
+        refreshResults(resetSelection: true)
+        clearFinishedScriptRun()
+    }
+
+    private func submitShellCommand() {
+        let input = shellCommandDraft
+
+        if shellInputMode == .foreground {
+            guard let id = selectedShellSessionID else { return }
+            if shellSessionManager.sendInputLine(input, to: id) {
+                clearShellDraft()
+            } else {
+                NSSound.beep()
+            }
+            return
+        }
+
+        guard !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        guard scriptRun?.phase != .running, !scriptRunner.isRunning else {
+            NSSound.beep()
+            isRunPalettePresented = true
+            return
+        }
+
+        scriptRun = nil
+        runGeneration += 1
+        dismissShellCompletion()
+
+        if let run = shellRun {
+            switch run.sessionPhase {
+            case .ready:
+                _ = submitShellCommand(input, to: run.id)
+            case .starting:
+                pendingShellCommands[run.id] = input
+            case .foreground:
+                // `shellInputMode` handled this above. Keep the draft intact if
+                // an event races the published state.
+                break
+            case .closing:
+                _ = startShellSession(pendingCommand: input)
+            }
+        } else {
+            _ = startShellSession(pendingCommand: input)
+        }
+    }
+
+    private static let shellOutputCharacterCap = 100_000
+    private static let shellTruncationMarker = "[earlier output truncated]\n"
+
+    private func startShellSession(
+        pendingCommand: String? = nil,
+        pendingCompletion: PendingShellCompletionRequest? = nil
+    ) -> Bool {
+        let previousRun = shellRun
+        let previousSelection = selectedShellSessionID
+        let id = ShellSessionID()
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        var nextRun = ShellRunState(
+            id: id,
+            command: "",
+            phase: .running,
+            sessionPhase: .starting,
+            output: previousRun?.sessionPhase == .closing ? (previousRun?.output ?? "") : "",
+            didTruncateOutput: previousRun?.sessionPhase == .closing
+                ? (previousRun?.didTruncateOutput ?? false)
+                : false,
+            workingDirectory: home
+        )
+        trimShellOutputIfNeeded(&nextRun)
+        shellSessions.append(nextRun)
+        selectedShellSessionID = id
+        if let pendingCommand { pendingShellCommands[id] = pendingCommand }
+        if let pendingCompletion { pendingShellCompletionRequests[id] = pendingCompletion }
+
+        let accepted = shellSessionManager.startSession(
+            id: id,
+            onOutput: { [weak self] callbackID, chunk in
+                self?.appendShellOutput(chunk, id: callbackID)
+            },
+            onEvent: { [weak self] callbackID, event in
+                self?.handleShellSessionEvent(event, id: callbackID)
+            }
+        )
+        guard accepted else {
+            shellSessions.removeAll { $0.id == id }
+            pendingShellCommands[id] = nil
+            pendingShellCompletionRequests[id] = nil
+            selectedShellSessionID = previousSelection
+            NSSound.beep()
+            return false
+        }
+
+        if let previousRun, previousRun.sessionPhase == .closing {
+            shellSessions.removeAll { $0.id == previousRun.id }
+        }
+        return true
+    }
+
+    @discardableResult
+    private func submitShellCommand(_ command: String, to id: ShellSessionID) -> Bool {
+        guard let index = shellSessions.firstIndex(where: { $0.id == id }),
+              shellSessions[index].sessionPhase == .ready else { return false }
+        let previousRun = shellSessions[index]
+        var run = previousRun
+        if !run.output.isEmpty {
+            if !run.output.hasSuffix("\n") { run.output += "\n" }
+            run.output += "\n"
+        }
+        run.output += "$ \(command)\n"
+        run.command = command
+        run.phase = .running
+        trimShellOutputIfNeeded(&run)
+        shellSessions[index] = run
+
+        guard shellSessionManager.submitCommand(command, to: id) else {
+            if let currentIndex = shellSessions.firstIndex(where: { $0.id == id }),
+               shellSessions[currentIndex].sessionPhase == .ready {
+                shellSessions[currentIndex] = previousRun
+            }
+            NSSound.beep()
+            return false
+        }
+
+        appendShellHistory(command)
+        shellHistoryIndex = shellHistory.count
+        shellHistoryDraft = ""
+        clearShellDraft()
+        isRunPalettePresented = false
+        return true
+    }
+
+    private func clearShellDraft() {
+        isConsumingShellTrigger = true
+        query = ""
+        isConsumingShellTrigger = false
+        resetShellHistoryNavigation()
+        dismissShellCompletion()
+        if focusTarget != .search { focusTarget = .search }
+    }
+
+    private func appendShellOutput(_ chunk: String, id: ShellSessionID) {
+        guard let index = shellSessions.firstIndex(where: { $0.id == id }) else { return }
+        guard !chunk.isEmpty else { return }
+        var run = shellSessions[index]
+        run.output += chunk
+        trimShellOutputIfNeeded(&run)
+        shellSessions[index] = run
+    }
+
+    private func handleShellSessionEvent(_ event: ShellSessionEvent, id: ShellSessionID) {
+        guard let index = shellSessions.firstIndex(where: { $0.id == id }) else { return }
+        var run = shellSessions[index]
+        // Once the user has closed a wedged startup, a late Ready/S/F frame
+        // must not resurrect it or submit the command that was queued before
+        // cancellation. Only the terminal Closed event remains actionable.
+        if run.sessionPhase == .closing {
+            guard case .closed = event else { return }
+        }
+        switch event {
+        case let .ready(cwd):
+            run.sessionPhase = .ready
+            run.workingDirectory = cwd
+            shellSessions[index] = run
+            refreshBackgroundShellResultsIfVisible()
+            if let command = pendingShellCommands.removeValue(forKey: id) {
+                _ = submitShellCommand(command, to: id)
+            } else if let request = pendingShellCompletionRequests.removeValue(forKey: id) {
+                performShellCompletionRequest(request, in: id)
+            }
+
+        case let .foregroundStarted(command):
+            run.command = command
+            run.phase = .running
+            run.sessionPhase = .foreground
+            shellSessions[index] = run
+            if selectedShellSessionID == id { dismissShellCompletion() }
+            refreshBackgroundShellResultsIfVisible()
+
+        case let .foregroundFinished(result, cwd):
+            if case let .failedToStart(message) = result {
+                if !run.output.isEmpty, !run.output.hasSuffix("\n") { run.output += "\n" }
+                run.output += "Failed to start: \(message)\n"
+            }
+            run.phase = .finished(result)
+            run.sessionPhase = .ready
+            run.workingDirectory = cwd
+            trimShellOutputIfNeeded(&run)
+            shellSessions[index] = run
+            isRunPalettePresented = false
+            refreshBackgroundShellResultsIfVisible()
+
+        case let .closed(result):
+            run.phase = .finished(result)
+            run.sessionPhase = .closing
+            trimShellOutputIfNeeded(&run)
+            shellSessions[index] = run
+            pendingShellCommands[id] = nil
+            pendingShellCompletionRequests[id] = nil
+            if activeShellCompletionRequestID != nil, selectedShellSessionID == id {
+                dismissShellCompletion()
+            }
+            if !isShellMode || selectedShellSessionID != id {
+                shellSessions.removeAll { $0.id == id }
+                if selectedShellSessionID == id { selectedShellSessionID = nil }
+                refreshBackgroundShellResultsIfVisible()
+            }
+        }
+    }
+
+    /// `results` contains value snapshots rather than bindings into
+    /// `shellSessions`. Keep a background row's Ready/Running label current as
+    /// lifecycle events arrive, without restarting an unrelated file browse.
+    private func refreshBackgroundShellResultsIfVisible() {
+        guard !isShellMode,
+              browseSession == nil,
+              !FileBrowserEngine.isPathLike(query.trimmingCharacters(in: .whitespacesAndNewlines))
+        else { return }
+        let selectedItemID = selectedItem?.id
+        refreshResults(resetSelection: false, preserving: selectedItemID)
+    }
+
+    private func trimShellOutputIfNeeded(_ run: inout ShellRunState) {
+        guard run.output.count > Self.shellOutputCharacterCap else { return }
+        let retainedCount = max(0, Self.shellOutputCharacterCap - Self.shellTruncationMarker.count)
+        var trimmed = run.output.suffix(retainedCount)
+        if let newline = trimmed.firstIndex(of: "\n") {
+            trimmed = trimmed[trimmed.index(after: newline)...]
+        }
+        run.output = Self.shellTruncationMarker + trimmed
+        run.didTruncateOutput = true
+    }
+
+    func requestShellCompletion(backward: Bool = false) {
+        guard isShellMode, shellInputMode == .idle else {
+            dismissShellCompletion()
+            return
+        }
+        if !shellCompletions.isEmpty {
+            moveShellCompletion(by: backward ? -1 : 1)
+            return
+        }
+
+        dismissShellCompletion()
+        let requestID = ShellCompletionRequestID()
+        let request = PendingShellCompletionRequest(
+            input: query,
+            cursorUTF16: (query as NSString).length,
+            requestID: requestID,
+            selectsLastCandidate: backward
+        )
+        activeShellCompletionRequestID = requestID
+        shellCompletionSelectsLastCandidate = backward
+
+        if let run = shellRun {
+            switch run.sessionPhase {
+            case .ready:
+                performShellCompletionRequest(request, in: run.id)
+            case .starting:
+                pendingShellCompletionRequests[run.id] = request
+            case .foreground:
+                dismissShellCompletion()
+            case .closing:
+                if !startShellSession(pendingCompletion: request) { dismissShellCompletion() }
+            }
+        } else if !startShellSession(pendingCompletion: request) {
+            dismissShellCompletion()
+        }
+    }
+
+    private func performShellCompletionRequest(
+        _ request: PendingShellCompletionRequest,
+        in id: ShellSessionID
+    ) {
+        guard activeShellCompletionRequestID == request.requestID,
+              shellSessions.contains(where: { $0.id == id && $0.sessionPhase == .ready }) else { return }
+        shellSessionManager.requestCompletions(
+            input: request.input,
+            cursorUTF16: request.cursorUTF16,
+            in: id,
+            requestID: request.requestID,
+            completion: { [weak self] callbackID, result in
+                self?.receiveShellCompletion(result, from: callbackID)
+            }
+        )
+    }
+
+    private func receiveShellCompletion(
+        _ result: ShellCompletionResult,
+        from id: ShellSessionID
+    ) {
+        guard isShellMode,
+              selectedShellSessionID == id,
+              shellRun?.sessionPhase == .ready,
+              activeShellCompletionRequestID == result.requestID else { return }
+        let length = (query as NSString).length
+        guard result.replacementRange.lowerBound >= 0,
+              result.replacementRange.upperBound >= result.replacementRange.lowerBound,
+              result.replacementRange.upperBound <= length else {
+            dismissShellCompletion()
+            return
+        }
+
+        var seen = Set<String>()
+        shellCompletions = result.candidates.filter { !$0.isEmpty && seen.insert($0).inserted }
+        shellCompletionReplacementRange = result.replacementRange
+        shellCompletionSelectionIndex = shellCompletionSelectsLastCandidate
+            ? max(0, shellCompletions.count - 1)
+            : 0
+        if shellCompletions.isEmpty { dismissShellCompletion() }
+    }
+
+    func moveShellCompletion(by offset: Int) {
+        guard !shellCompletions.isEmpty, offset != 0 else { return }
+        shellCompletionSelectionIndex = (
+            shellCompletionSelectionIndex + offset % shellCompletions.count + shellCompletions.count
+        ) % shellCompletions.count
+    }
+
+    func acceptShellCompletion() {
+        acceptShellCompletion(at: shellCompletionSelectionIndex)
+    }
+
+    func acceptShellCompletion(at index: Int) {
+        guard shellCompletions.indices.contains(index),
+              let replacementRange = shellCompletionReplacementRange else { return }
+        let candidate = shellCompletions[index]
+        let source = query as NSString
+        guard replacementRange.upperBound <= source.length else {
+            dismissShellCompletion()
+            return
+        }
+        query = source.replacingCharacters(
+            in: NSRange(
+                location: replacementRange.lowerBound,
+                length: replacementRange.upperBound - replacementRange.lowerBound
+            ),
+            with: candidate
+        )
+        dismissShellCompletion()
+    }
+
+    func dismissShellCompletion() {
+        if let requestID = activeShellCompletionRequestID {
+            pendingShellCompletionRequests = pendingShellCompletionRequests.filter {
+                $0.value.requestID != requestID
+            }
+        }
+        activeShellCompletionRequestID = nil
+        shellCompletionReplacementRange = nil
+        shellCompletionSelectsLastCandidate = false
+        shellCompletions = []
+        shellCompletionSelectionIndex = 0
+    }
+
+    private func moveShellHistory(by offset: Int) {
+        guard !shellHistory.isEmpty, offset != 0 else { return }
+        if shellHistoryIndex == shellHistory.count {
+            shellHistoryDraft = shellCommandDraft
+        }
+        let nextIndex = min(max(shellHistoryIndex + offset, 0), shellHistory.count)
+        guard nextIndex != shellHistoryIndex else { return }
+        shellHistoryIndex = nextIndex
+        let command = nextIndex == shellHistory.count ? shellHistoryDraft : shellHistory[nextIndex]
+        isApplyingShellHistory = true
+        query = command
+        isApplyingShellHistory = false
+    }
+
+    private func discardSelectedShellIfFinished() {
+        guard let id = selectedShellSessionID,
+              let run = shellSessions.first(where: { $0.id == id }),
+              run.sessionPhase == .closing else { return }
+        shellSessions.removeAll { $0.id == id }
+        selectedShellSessionID = nil
+    }
+
+    private func resetShellHistoryNavigation() {
+        shellHistoryIndex = shellHistory.count
+        shellHistoryDraft = ""
+    }
+
+    private static let maximumShellHistoryEntries = 50
+    private static let maximumShellHistoryCharacters = 100_000
+
+    private func appendShellHistory(_ command: String) {
+        if shellHistory.last != command { shellHistory.append(command) }
+        var characterCount = shellHistory.reduce(0) { $0 + $1.count }
+        while shellHistory.count > Self.maximumShellHistoryEntries
+            || characterCount > Self.maximumShellHistoryCharacters {
+            characterCount -= shellHistory.removeFirst().count
+        }
     }
 
     private func firstMissingRequiredArgumentIndex(for script: ScriptCommand) -> Int? {
@@ -1304,13 +2037,49 @@ final class LauncherModel: ObservableObject {
             )
         }
         isLoading = false
-        guard browseSession == nil,
+        guard !isShellMode,
+              browseSession == nil,
               !FileBrowserEngine.isPathLike(query.trimmingCharacters(in: .whitespacesAndNewlines))
         else { return }
         refreshResults(resetSelection: true, preserving: selectedID)
     }
 
     private func refreshResults(resetSelection: Bool, preserving selectedID: String? = nil) {
+        if isShellMode {
+            cancelFileListingRequest()
+            browseSession = nil
+            fileListing = nil
+            calculation = nil
+            results = []
+            selectedIndex = 0
+            syncArgumentState()
+            setPanelPresentation(.shellConsole)
+            return
+        }
+
+        if panelPresentation == .shellConsole {
+            setPanelPresentation(.compact)
+        }
+        let runningShellItems = shellSessions.reversed().compactMap { run -> LauncherItem? in
+            guard run.sessionPhase != .closing else { return nil }
+            let title = run.command.isEmpty ? "Shell Session" : run.command
+            let stateDescription: String
+            switch run.sessionPhase {
+            case .starting: stateDescription = "Starting Shell"
+            case .ready: stateDescription = "Ready in \(displayShellDirectory(run.workingDirectory))"
+            case .foreground: stateDescription = "Running in Shell"
+            case .closing: return nil
+            }
+            return LauncherItem(
+                id: "shell.\(run.id.rawValue.uuidString)",
+                title: title,
+                subtitle: stateDescription,
+                kind: .runningShell,
+                destination: .shellSession(run.id),
+                keywords: "running shell terminal command \(run.command) \(run.workingDirectory)",
+                detail: run.sessionPhase == .foreground ? "Running" : "Ready"
+            )
+        }
         let allItems = [launcherSettingsItem, createScriptItem]
             + applications + scripts + ApplicationCatalog.systemSettings
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1330,7 +2099,7 @@ final class LauncherModel: ObservableObject {
 
         if trimmedQuery.isEmpty {
             let suggestedApplications = applications.prefix(5)
-            results = [launcherSettingsItem] + suggestedApplications
+            results = runningShellItems + [launcherSettingsItem] + suggestedApplications
         } else {
             let preparedQuery = SearchMatcher.prepare(trimmedQuery)
             let matches = allItems
@@ -1361,9 +2130,9 @@ final class LauncherModel: ObservableObject {
                     destination: .copyText(calculation.formattedResult),
                     keywords: ""
                 )
-                results = [calculatorItem] + matches
+                results = runningShellItems + [calculatorItem] + matches
             } else {
-                results = matches
+                results = runningShellItems + matches
             }
         }
 

@@ -5,6 +5,7 @@ import SwiftUI
 
 final class LauncherPanel: NSPanel {
     var onCancel: (() -> Void)?
+    var onInterrupt: (() -> Bool)?
     weak var quickLook: QuickLookController?
 
     override var canBecomeKey: Bool { true }
@@ -12,6 +13,18 @@ final class LauncherPanel: NSPanel {
 
     override func cancelOperation(_ sender: Any?) {
         onCancel?()
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let meaningfulModifiers = event.modifierFlags
+            .intersection(.deviceIndependentFlagsMask)
+            .subtracting([.capsLock, .function])
+        if event.type == .keyDown,
+           meaningfulModifiers == .control,
+           event.charactersIgnoringModifiers?.lowercased() == "c" {
+            if onInterrupt?() == true { return true }
+        }
+        return super.performKeyEquivalent(with: event)
     }
 
     override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool {
@@ -115,6 +128,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         false
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        model.terminateRunningProcess()
+    }
+
     func applicationDidResignActive(_ notification: Notification) {
         guard !isUITesting else { return }
         hideLauncher()
@@ -173,6 +190,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             backing: .buffered,
             defer: false
         )
+        panel.onInterrupt = { [weak self] in
+            guard let self, self.model.hasRunningProcess else { return false }
+            self.model.cancelCurrentRun()
+            return true
+        }
         panel.title = "Launcher"
         panel.delegate = self
         panel.isFloatingPanel = true
@@ -255,16 +277,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// edge so the search field and results stay put under the user's eye.
     private func setOutputPanePresented(_ isPresented: Bool) {
         guard let panel else { return }
-        if isPresented { compactFrameOrigin = panel.frame.origin }
+        if isPresented, compactFrameOrigin == nil {
+            // A rapid expand → collapse → expand can arrive while AppKit is
+            // still animating the first transition. Preserve the original
+            // compact target instead of replacing it with an intermediate,
+            // edge-shifted frame and causing cumulative lateral drift.
+            compactFrameOrigin = panel.frame.origin
+        }
 
         let width = isPresented ? LauncherStyle.expandedPanelWidth : LauncherStyle.panelWidth
-        let preferredOrigin = isPresented ? panel.frame.origin : compactFrameOrigin
+        let preferredOrigin = isPresented
+            ? (compactFrameOrigin ?? panel.frame.origin)
+            : compactFrameOrigin
         let targetFrame = constrainedFrame(for: panel, width: width, preferredOrigin: preferredOrigin)
-        if !isPresented { compactFrameOrigin = nil }
 
         guard panel.isVisible,
               !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
             panel.setFrame(targetFrame, display: panel.isVisible)
+            if !isPresented { compactFrameOrigin = nil }
             return
         }
 
@@ -273,6 +303,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             context.allowsImplicitAnimation = true
             panel.animator().setFrame(targetFrame, display: true)
+        } completionHandler: { [weak self, weak panel] in
+            guard let self, let panel,
+                  !self.model.isPanelExpanded,
+                  panel.frame.width == LauncherStyle.panelWidth else { return }
+            self.compactFrameOrigin = nil
         }
     }
 

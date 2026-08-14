@@ -24,9 +24,44 @@ protocol ScriptRunning: AnyObject {
 
     /// SIGTERM immediately, SIGKILL if the process is still alive 2 s later.
     func cancel()
+
+    /// Immediately tears down the owned process group during application
+    /// shutdown. Test doubles can rely on the default graceful behavior.
+    func terminateImmediately()
 }
 
-final class ProcessScriptRunner: ScriptRunning {
+extension ScriptRunning {
+    func terminateImmediately() { cancel() }
+}
+
+protocol ShellCommandRunning: AnyObject {
+    var isRunning: Bool { get }
+
+    /// Starts `rawCommand` in the user's shell. Returns false (doing nothing)
+    /// when either a script or another shell command already owns the shared
+    /// foreground-process slot. Output and completion follow the same main-
+    /// queue ordering guarantee as `ScriptRunning.run`.
+    @discardableResult
+    func runShellCommand(
+        _ rawCommand: String,
+        onOutput: @escaping (String) -> Void,
+        onCompletion: @escaping (ScriptRunResult) -> Void
+    ) -> Bool
+
+    /// SIGINT immediately, SIGKILL if the shell process group is still alive
+    /// two seconds later.
+    func cancel()
+
+    /// Immediately tears down the owned process group during application
+    /// shutdown. Test doubles can rely on the default graceful behavior.
+    func terminateImmediately()
+}
+
+extension ShellCommandRunning {
+    func terminateImmediately() { cancel() }
+}
+
+final class ProcessScriptRunner: ScriptRunning, ShellCommandRunning {
     /// Decodes a byte stream as UTF-8, holding back a trailing partial
     /// multi-byte sequence until the next chunk completes it.
     struct UTF8StreamDecoder {
@@ -76,6 +111,7 @@ final class ProcessScriptRunner: ScriptRunning {
     private final class SpawnedProcess {
         let identifier: pid_t
         let outputFD: Int32
+        let initialCancellationSignal: Int32
 
         /// Left after `waitid(..., WNOWAIT)` has captured the leader's
         /// status without reaping it. Delayed cancellation cleanup waits for
@@ -85,9 +121,10 @@ final class ProcessScriptRunner: ScriptRunning {
         private let cleanupLock = NSLock()
         private var cancellationCleanupScheduled = false
 
-        init(identifier: pid_t, outputFD: Int32) {
+        init(identifier: pid_t, outputFD: Int32, initialCancellationSignal: Int32) {
             self.identifier = identifier
             self.outputFD = outputFD
+            self.initialCancellationSignal = initialCancellationSignal
             exitObserved.enter()
         }
 
@@ -103,6 +140,41 @@ final class ProcessScriptRunner: ScriptRunning {
     private enum SpawnResult {
         case success(SpawnedProcess)
         case failure(Int32)
+    }
+
+    private enum OutputPolicy {
+        case capture
+        case discard
+    }
+
+    private enum EnvironmentOverride {
+        case set(String)
+        case remove
+    }
+
+    /// Everything that varies between a script and a one-shot shell command.
+    /// The surrounding reservation, environment resolution, streaming, wait,
+    /// completion, and process-group cleanup paths deliberately stay shared.
+    private struct SpawnRequest {
+        let executable: String
+        /// Complete argv, including argv[0].
+        let arguments: [String]
+        let workingDirectory: URL
+        let outputPolicy: OutputPolicy
+        let sanitizesTerminalOutput: Bool
+        let environmentOverrides: [String: EnvironmentOverride]
+        let initialCancellationSignal: Int32
+
+        func environment(applyingTo base: [String: String]) -> [String: String] {
+            var result = base
+            for (key, override) in environmentOverrides {
+                switch override {
+                case let .set(value): result[key] = value
+                case .remove: result.removeValue(forKey: key)
+                }
+            }
+            return result
+        }
     }
 
     private let stateQueue = DispatchQueue(label: "launcher.scriptRunner.state")
@@ -121,6 +193,7 @@ final class ProcessScriptRunner: ScriptRunning {
     private var outputFD: Int32 = -1
     private var outputSource: DispatchSourceRead?
     private var decoder = UTF8StreamDecoder()
+    private var outputSanitizer: TerminalOutputSanitizer?
     private var pendingOutput = ""
     private var flushScheduled = false
     private var onOutput: ((String) -> Void)?
@@ -128,6 +201,7 @@ final class ProcessScriptRunner: ScriptRunning {
 
     private static let flushInterval: DispatchTimeInterval = .milliseconds(80)
     private static let killGracePeriod: DispatchTimeInterval = .seconds(2)
+    static let maximumShellCommandBytes = 64 * 1_024
     /// Matches the model's retained-output cap. Keeping this bound upstream
     /// prevents a fast producer from assembling and dispatching a multi-megabyte
     /// String during one 80 ms coalescing window, only for the UI to discard it.
@@ -164,6 +238,7 @@ final class ProcessScriptRunner: ScriptRunning {
             self.outputSource = nil
             self.outputFD = -1
             self.spawnedProcess = nil
+            self.outputSanitizer = nil
             self.onOutput = nil
             self.onCompletion = nil
             self.isActive = false
@@ -195,23 +270,89 @@ final class ProcessScriptRunner: ScriptRunning {
         onOutput: @escaping (String) -> Void,
         onCompletion: @escaping (ScriptRunResult) -> Void
     ) -> Bool {
+        let isExecutable = FileManager.default.isExecutableFile(atPath: command.url.path)
+        let executable = isExecutable ? command.url.path : "/bin/bash"
+        let childArguments = isExecutable ? arguments : [command.url.path] + arguments
+        let request = SpawnRequest(
+            executable: executable,
+            arguments: [executable] + childArguments,
+            workingDirectory: command.url.deletingLastPathComponent(),
+            outputPolicy: command.mode == .silent ? .discard : .capture,
+            sanitizesTerminalOutput: false,
+            environmentOverrides: [:],
+            initialCancellationSignal: SIGTERM
+        )
+        return run(
+            request,
+            onOutput: onOutput,
+            onCompletion: onCompletion
+        )
+    }
+
+    @discardableResult
+    func runShellCommand(
+        _ rawCommand: String,
+        onOutput: @escaping (String) -> Void,
+        onCompletion: @escaping (ScriptRunResult) -> Void
+    ) -> Bool {
+        // C strings cannot represent an embedded NUL. Reject it explicitly so
+        // the command is never silently truncated before reaching `-c`.
+        guard !rawCommand.contains("\0") else {
+            return finishRejectedRequest(
+                message: "Shell command contains an embedded NUL byte.",
+                onOutput: onOutput,
+                onCompletion: onCompletion
+            )
+        }
+        guard rawCommand.utf8.count <= Self.maximumShellCommandBytes else {
+            return finishRejectedRequest(
+                message: "Shell command is too long (maximum 64 KiB).",
+                onOutput: onOutput,
+                onCompletion: onCompletion
+            )
+        }
+        guard let shellPath = ShellEnvironment.loginShellPath() else {
+            return finishRejectedRequest(
+                message: "No usable login shell was found.",
+                onOutput: onOutput,
+                onCompletion: onCompletion
+            )
+        }
+
+        let request = SpawnRequest(
+            executable: shellPath,
+            arguments: [shellPath, "-c", rawCommand],
+            workingDirectory: FileManager.default.homeDirectoryForCurrentUser,
+            outputPolicy: .capture,
+            sanitizesTerminalOutput: true,
+            environmentOverrides: [
+                "SHELL": .set(shellPath),
+                "TERM": .set("dumb"),
+                "NO_COLOR": .set("1"),
+                "COLORTERM": .remove,
+            ],
+            initialCancellationSignal: SIGINT
+        )
+        return run(
+            request,
+            onOutput: onOutput,
+            onCompletion: onCompletion
+        )
+    }
+
+    @discardableResult
+    private func run(
+        _ request: SpawnRequest,
+        onOutput: @escaping (String) -> Void,
+        onCompletion: @escaping (ScriptRunResult) -> Void
+    ) -> Bool {
         let identifier: UInt64? = stateQueue.sync {
-            guard !isActive else { return nil }
-            runIdentifier &+= 1
-            isActive = true
-            cancelRequested = false
-            spawnedProcess = nil
-            outputFD = -1
-            outputSource = nil
-            decoder = UTF8StreamDecoder()
-            pendingOutput = ""
-            flushScheduled = false
-            // Silent scripts still need their pipe drained so they cannot block,
-            // but retaining no callback also lets the read path skip UTF-8
-            // decoding, String growth, coalescing timers, and main-queue work.
-            self.onOutput = command.mode == .silent ? nil : onOutput
-            self.onCompletion = onCompletion
-            return runIdentifier
+            reserveRun(
+                outputPolicy: request.outputPolicy,
+                sanitizesTerminalOutput: request.sanitizesTerminalOutput,
+                onOutput: onOutput,
+                onCompletion: onCompletion
+            )
         }
         guard let identifier else { return false }
 
@@ -219,14 +360,57 @@ final class ProcessScriptRunner: ScriptRunning {
             guard let self else { return }
             stateQueue.async {
                 self.startProcess(
-                    command,
-                    arguments: arguments,
-                    environment: environment,
+                    request,
+                    environment: request.environment(applyingTo: environment),
                     identifier: identifier
                 )
             }
         }
         return true
+    }
+
+    /// Accepts a syntactically invalid shell request only when the shared slot
+    /// is free, then reports the failure using the normal asynchronous callback
+    /// contract without resolving an environment or spawning a child.
+    private func finishRejectedRequest(
+        message: String,
+        onOutput: @escaping (String) -> Void,
+        onCompletion: @escaping (ScriptRunResult) -> Void
+    ) -> Bool {
+        stateQueue.sync {
+            guard let identifier = reserveRun(
+                outputPolicy: .capture,
+                sanitizesTerminalOutput: true,
+                onOutput: onOutput,
+                onCompletion: onCompletion
+            ) else { return false }
+            finish(.failedToStart(message), identifier: identifier)
+            return true
+        }
+    }
+
+    /// Reserves the one runner-wide foreground-process slot. Must run on
+    /// `stateQueue`.
+    private func reserveRun(
+        outputPolicy: OutputPolicy,
+        sanitizesTerminalOutput: Bool,
+        onOutput: @escaping (String) -> Void,
+        onCompletion: @escaping (ScriptRunResult) -> Void
+    ) -> UInt64? {
+        guard !isActive else { return nil }
+        runIdentifier &+= 1
+        isActive = true
+        cancelRequested = false
+        spawnedProcess = nil
+        outputFD = -1
+        outputSource = nil
+        decoder = UTF8StreamDecoder()
+        outputSanitizer = sanitizesTerminalOutput ? TerminalOutputSanitizer() : nil
+        pendingOutput = ""
+        flushScheduled = false
+        self.onOutput = outputPolicy == .capture ? onOutput : nil
+        self.onCompletion = onCompletion
+        return runIdentifier
     }
 
     func cancel() {
@@ -250,9 +434,36 @@ final class ProcessScriptRunner: ScriptRunning {
         }
     }
 
+    /// Application termination cannot rely on the normal two-second escalation
+    /// timer firing after the app's queues have stopped. Deliver SIGKILL to the
+    /// complete owned group synchronously, then leave reaping to the existing
+    /// waiter while the process exits.
+    func terminateImmediately() {
+        stateQueue.sync {
+            guard isActive, let spawnedProcess else {
+                if isActive {
+                    cancelRequested = true
+                    finish(.cancelled, identifier: runIdentifier)
+                }
+                return
+            }
+            cancelRequested = true
+            Self.signalOwnedProcess(spawnedProcess.identifier, signal: SIGKILL)
+            if spawnedProcess.beginCancellationCleanup() {
+                waitQueue.async {
+                    spawnedProcess.exitObserved.wait()
+                    Self.reap(spawnedProcess.identifier)
+                }
+            }
+        }
+    }
+
     private func scheduleCancellationCleanup(_ process: SpawnedProcess) {
         guard process.beginCancellationCleanup() else { return }
-        Self.signalOwnedProcess(process.identifier, signal: SIGTERM)
+        Self.signalOwnedProcess(
+            process.identifier,
+            signal: process.initialCancellationSignal
+        )
         waitQueue.asyncAfter(deadline: .now() + Self.killGracePeriod) {
             Self.signalOwnedProcess(process.identifier, signal: SIGKILL)
             process.exitObserved.wait()
@@ -263,14 +474,13 @@ final class ProcessScriptRunner: ScriptRunning {
     // MARK: - Process lifecycle (on stateQueue)
 
     private func startProcess(
-        _ command: ScriptCommand,
-        arguments: [String],
+        _ request: SpawnRequest,
         environment: [String: String],
         identifier: UInt64
     ) {
         guard isActive, runIdentifier == identifier, !cancelRequested else { return }
 
-        switch Self.spawn(command, arguments: arguments, environment: environment) {
+        switch Self.spawn(request, environment: environment) {
         case let .failure(errorCode):
             finish(
                 .failedToStart(String(cString: strerror(errorCode))),
@@ -280,15 +490,20 @@ final class ProcessScriptRunner: ScriptRunning {
             spawnedProcess = spawned
             outputFD = spawned.outputFD
 
-            let source = DispatchSource.makeReadSource(fileDescriptor: spawned.outputFD, queue: stateQueue)
-            source.setEventHandler { [weak self] in
-                self?.readAvailableOutput(identifier: identifier)
+            if spawned.outputFD >= 0 {
+                let source = DispatchSource.makeReadSource(
+                    fileDescriptor: spawned.outputFD,
+                    queue: stateQueue
+                )
+                source.setEventHandler { [weak self] in
+                    self?.readAvailableOutput(identifier: identifier)
+                }
+                source.setCancelHandler {
+                    _ = Darwin.close(spawned.outputFD)
+                }
+                outputSource = source
+                source.resume()
             }
-            source.setCancelHandler {
-                _ = Darwin.close(spawned.outputFD)
-            }
-            outputSource = source
-            source.resume()
 
             waitQueue.async { [weak self] in
                 var info = siginfo_t()
@@ -353,7 +568,14 @@ final class ProcessScriptRunner: ScriptRunning {
         guard isActive, runIdentifier == identifier else { return }
 
         if outputFD >= 0 { drainAndCloseOutput() }
-        appendPending(decoder.flushRemainder())
+        let remainder = decoder.flushRemainder()
+        if var sanitizer = outputSanitizer {
+            appendPending(sanitizer.sanitize(remainder))
+            appendPending(sanitizer.finish())
+            outputSanitizer = nil
+        } else {
+            appendPending(remainder)
+        }
         let finalChunk = pendingOutput
         pendingOutput = ""
         flushScheduled = true // suppress any queued timer flush for this run
@@ -442,7 +664,13 @@ final class ProcessScriptRunner: ScriptRunning {
     }
 
     private func appendDecoded(_ data: Data) {
-        appendPending(decoder.decode(data))
+        let decoded = decoder.decode(data)
+        if var sanitizer = outputSanitizer {
+            appendPending(sanitizer.sanitize(decoded))
+            outputSanitizer = sanitizer
+        } else {
+            appendPending(decoded)
+        }
     }
 
     private func appendPending(_ decoded: String) {
@@ -470,31 +698,30 @@ final class ProcessScriptRunner: ScriptRunning {
     /// attribute atomically while creating the child, which lets cancellation
     /// signal the script and every descendant that remains in its group.
     private static func spawn(
-        _ command: ScriptCommand,
-        arguments: [String],
+        _ request: SpawnRequest,
         environment: [String: String]
     ) -> SpawnResult {
-        let isExecutable = FileManager.default.isExecutableFile(atPath: command.url.path)
-        let executable = isExecutable ? command.url.path : "/bin/bash"
-        let childArguments = isExecutable ? arguments : [command.url.path] + arguments
-        let argv = [executable] + childArguments
         let environmentEntries = environment.map { "\($0.key)=\($0.value)" }.sorted()
 
-        var descriptors = [Int32](repeating: -1, count: 2)
-        let pipeResult = descriptors.withUnsafeMutableBufferPointer { pipe($0.baseAddress!) }
-        guard pipeResult == 0 else { return .failure(errno) }
-        let readFD = descriptors[0]
-        let writeFD = descriptors[1]
+        var readFD: Int32 = -1
+        var writeFD: Int32 = -1
+        if request.outputPolicy == .capture {
+            var descriptors = [Int32](repeating: -1, count: 2)
+            let pipeResult = descriptors.withUnsafeMutableBufferPointer { pipe($0.baseAddress!) }
+            guard pipeResult == 0 else { return .failure(errno) }
+            readFD = descriptors[0]
+            writeFD = descriptors[1]
+
+            let readFlags = fcntl(readFD, F_GETFL)
+            if readFlags != -1 { _ = fcntl(readFD, F_SETFL, readFlags | O_NONBLOCK) }
+            _ = fcntl(readFD, F_SETFD, FD_CLOEXEC)
+            _ = fcntl(writeFD, F_SETFD, FD_CLOEXEC)
+        }
 
         func closeDescriptors() {
             if readFD >= 0 { _ = Darwin.close(readFD) }
             if writeFD >= 0 { _ = Darwin.close(writeFD) }
         }
-
-        let readFlags = fcntl(readFD, F_GETFL)
-        if readFlags != -1 { _ = fcntl(readFD, F_SETFL, readFlags | O_NONBLOCK) }
-        _ = fcntl(readFD, F_SETFD, FD_CLOEXEC)
-        _ = fcntl(writeFD, F_SETFD, FD_CLOEXEC)
 
         var fileActions: posix_spawn_file_actions_t? = nil
         var attributes: posix_spawnattr_t? = nil
@@ -512,21 +739,39 @@ final class ProcessScriptRunner: ScriptRunning {
         }
         defer { posix_spawnattr_destroy(&attributes) }
 
-        setupError = posix_spawn_file_actions_adddup2(&fileActions, writeFD, STDOUT_FILENO)
-        if setupError == 0 {
-            setupError = posix_spawn_file_actions_adddup2(&fileActions, writeFD, STDERR_FILENO)
+        switch request.outputPolicy {
+        case .capture:
+            setupError = posix_spawn_file_actions_adddup2(&fileActions, writeFD, STDOUT_FILENO)
+            if setupError == 0 {
+                setupError = posix_spawn_file_actions_adddup2(&fileActions, writeFD, STDERR_FILENO)
+            }
+        case .discard:
+            setupError = posix_spawn_file_actions_addopen(
+                &fileActions,
+                STDOUT_FILENO,
+                "/dev/null",
+                O_WRONLY,
+                0
+            )
+            if setupError == 0 {
+                setupError = posix_spawn_file_actions_adddup2(
+                    &fileActions,
+                    STDOUT_FILENO,
+                    STDERR_FILENO
+                )
+            }
         }
         if setupError == 0 {
             setupError = posix_spawn_file_actions_addopen(&fileActions, STDIN_FILENO, "/dev/null", O_RDONLY, 0)
         }
-        if setupError == 0 {
+        if setupError == 0, readFD >= 0 {
             setupError = posix_spawn_file_actions_addclose(&fileActions, readFD)
         }
-        if setupError == 0 {
+        if setupError == 0, writeFD >= 0 {
             setupError = posix_spawn_file_actions_addclose(&fileActions, writeFD)
         }
         if setupError == 0 {
-            setupError = command.url.deletingLastPathComponent().path.withCString {
+            setupError = request.workingDirectory.path.withCString {
                 posix_spawn_file_actions_addchdir_np(&fileActions, $0)
             }
         }
@@ -562,8 +807,8 @@ final class ProcessScriptRunner: ScriptRunning {
         }
 
         var childPID: pid_t = 0
-        let spawnError = executable.withCString { executablePointer in
-            withMutableCStringArray(argv) { argumentPointers in
+        let spawnError = request.executable.withCString { executablePointer in
+            withMutableCStringArray(request.arguments) { argumentPointers in
                 withMutableCStringArray(environmentEntries) { environmentPointers in
                     posix_spawn(
                         &childPID,
@@ -581,8 +826,12 @@ final class ProcessScriptRunner: ScriptRunning {
             return .failure(spawnError)
         }
 
-        _ = Darwin.close(writeFD)
-        return .success(SpawnedProcess(identifier: childPID, outputFD: readFD))
+        if writeFD >= 0 { _ = Darwin.close(writeFD) }
+        return .success(SpawnedProcess(
+            identifier: childPID,
+            outputFD: readFD,
+            initialCancellationSignal: request.initialCancellationSignal
+        ))
     }
 
     private static func withMutableCStringArray<Result>(

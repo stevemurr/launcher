@@ -62,6 +62,202 @@ final class LauncherUITests: XCTestCase {
         add(attachment)
     }
 
+    func testShellModeExpandsAndRunsConsecutiveCommandsInline() {
+        let search = app.textFields["launcher.search"]
+        search.click()
+        // Keep the expected output out of the command text itself so the
+        // assertion below cannot pass merely because the transcript echoes the
+        // prompt before the process has produced anything.
+        let firstCommand = "/usr/bin/printf 'shell-%s' one"
+        search.typeText("> \(firstCommand)")
+
+        let triggerConsumed = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", firstCommand),
+            object: search
+        )
+        let triggerResult = XCTWaiter.wait(for: [triggerConsumed], timeout: 3)
+        XCTAssertEqual(
+            triggerResult,
+            .completed,
+            "the > trigger must disappear instead of becoming shell input; actual value: \(String(describing: search.value))"
+        )
+
+        let console = app.descendants(matching: .any)["shell.console"].firstMatch
+        let output = app.descendants(matching: .any)["shell.output"].firstMatch
+        let status = app.descendants(matching: .any)["shell.output.status"].firstMatch
+        XCTAssertTrue(console.waitForExistence(timeout: 3))
+        XCTAssertTrue(output.exists)
+        XCTAssertTrue(waitForPanelWidth(990), "shell mode did not expand to the drawer width")
+        let dialog = app.dialogs.firstMatch
+        let panelFrame = (dialog.exists ? dialog : app.windows.firstMatch).frame
+        XCTAssertEqual(console.frame.minX, panelFrame.minX, accuracy: 2)
+        XCTAssertEqual(console.frame.maxX, panelFrame.maxX, accuracy: 2)
+        XCTAssertFalse(app.buttons["footer.actions"].exists)
+
+        search.typeKey(.return, modifierFlags: [])
+        let firstOutput = XCTNSPredicateExpectation(
+            predicate: NSPredicate(
+                format: "label CONTAINS %@ OR value CONTAINS %@",
+                "shell-one",
+                "shell-one"
+            ),
+            object: output
+        )
+        let firstOutputResult = XCTWaiter.wait(for: [firstOutput], timeout: 6)
+        XCTAssertEqual(
+            firstOutputResult,
+            .completed,
+            "missing shell output; output label=\(output.label), value=\(String(describing: output.value)), "
+                + "status label=\(status.label), value=\(String(describing: status.value))"
+        )
+        let firstReady = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", "Ready", "Ready"),
+            object: status
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [firstReady], timeout: 6), .completed)
+
+        // Return leaves the existing AppKit field editor focused with an empty
+        // raw shell draft, so a second command needs no click.
+        XCTAssertEqual(search.value as? String, "")
+        app.typeText("/usr/bin/printf 'shell-%s' two")
+        app.typeKey(.return, modifierFlags: [])
+        let secondOutput = XCTNSPredicateExpectation(
+            predicate: NSPredicate(
+                format: "label CONTAINS %@ OR value CONTAINS %@",
+                "shell-two",
+                "shell-two"
+            ),
+            object: output
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [secondOutput], timeout: 6), .completed)
+        let secondReady = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", "Ready", "Ready"),
+            object: status
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [secondReady], timeout: 6), .completed)
+        XCTAssertTrue(waitForPanelWidth(990))
+
+        // `cd` mutates the persistent shell rather than a throwaway process.
+        // Wait for the header's cwd event before submitting pwd, then prove the
+        // following command observes that same directory.
+        app.typeText("cd /tmp")
+        app.typeKey(.return, modifierFlags: [])
+        let workingDirectory = app.descendants(matching: .any)["shell.workingDirectory"].firstMatch
+        let changedDirectory = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", "tmp", "tmp"),
+            object: workingDirectory
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [changedDirectory], timeout: 6), .completed)
+
+        app.typeText("/bin/pwd -P")
+        app.typeKey(.return, modifierFlags: [])
+        let persistentPWD = XCTNSPredicateExpectation(
+            predicate: NSPredicate(
+                format: "label CONTAINS %@ OR value CONTAINS %@",
+                "/tmp",
+                "/tmp"
+            ),
+            object: output
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [persistentPWD], timeout: 6), .completed)
+
+        // Exercise Control-C through the live AppKit field editor, not merely
+        // the text-field subclass, while a real process owns the runner.
+        app.typeText("/bin/sleep 30")
+        app.typeKey(.return, modifierFlags: [])
+        let running = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", "Running", "Running"),
+            object: status
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [running], timeout: 3), .completed)
+
+        // Escape leaves the process alive and returns to compact search. Its
+        // resumable row is pinned in a dedicated section ahead of normal items.
+        search.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(waitForPanelWidth(774), "Escape did not leave the shell console")
+        XCTAssertTrue(app.staticTexts["Running Shells"].waitForExistence(timeout: 3))
+        XCTAssertFalse(console.exists)
+        XCTAssertEqual(search.value as? String, "")
+
+        // The pinned running-shell row is selected first. Return resumes the
+        // existing console; it must not launch another process.
+        search.typeKey(.return, modifierFlags: [])
+        XCTAssertTrue(console.waitForExistence(timeout: 3))
+        XCTAssertTrue(waitForPanelWidth(990), "running shell did not resume full-width console")
+        let resumed = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", "Running", "Running"),
+            object: status
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [resumed], timeout: 3), .completed)
+
+        search.typeKey("c", modifierFlags: [.control])
+        let readyForAnotherCommand = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label CONTAINS %@", "Run Command"),
+            object: app.buttons["shell.run"]
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [readyForAnotherCommand], timeout: 6), .completed)
+
+        // Interrupting a foreground process must not kill the persistent shell.
+        // A fresh command in the same resumed session should still execute.
+        app.typeText("/usr/bin/printf 'shell-%s' after-interrupt")
+        app.typeKey(.return, modifierFlags: [])
+        let afterInterrupt = XCTNSPredicateExpectation(
+            predicate: NSPredicate(
+                format: "label CONTAINS %@ OR value CONTAINS %@",
+                "shell-after-interrupt",
+                "shell-after-interrupt"
+            ),
+            object: output
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [afterInterrupt], timeout: 6), .completed)
+
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = "Full-width shell console"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    func testShellTabCompletionShowsCandidatesAndReturnAcceptsWithoutRunning() {
+        let search = app.textFields["launcher.search"]
+        search.click()
+        let partialCommand = "/usr/bin/print"
+        search.typeText("> /usr/bin/true")
+        search.typeKey(.return, modifierFlags: [])
+
+        let status = app.descendants(matching: .any)["shell.output.status"].firstMatch
+        let sessionReady = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", "Ready", "Ready"),
+            object: status
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [sessionReady], timeout: 6), .completed)
+        XCTAssertEqual(search.value as? String, "")
+        app.typeText(partialCommand)
+
+        let triggerConsumed = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", partialCommand),
+            object: search
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [triggerConsumed], timeout: 3), .completed)
+
+        search.typeKey(.tab, modifierFlags: [])
+        let palette = app.descendants(matching: .any)["shell.completions"].firstMatch
+        XCTAssertTrue(palette.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["shell.completion.0"].firstMatch.exists)
+
+        // While candidates are open Return accepts the selected replacement;
+        // it must not also submit the newly completed command.
+        search.typeKey(.return, modifierFlags: [])
+        let accepted = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value BEGINSWITH %@ AND value != %@", partialCommand, partialCommand),
+            object: search
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [accepted], timeout: 3), .completed)
+        XCTAssertFalse(palette.exists)
+
+        search.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(waitForPanelWidth(774))
+    }
+
     // Keyboard-driven on purpose: moving the mouse across result rows changes
     // the hover selection, which reflows the footer and races XCUITest's
     // find-then-click coordinates.
