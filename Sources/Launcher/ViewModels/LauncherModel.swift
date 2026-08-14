@@ -1671,6 +1671,12 @@ final class LauncherModel: ObservableObject {
             guard case .closed = event else { return }
         }
         switch event {
+        case .inputEchoStateChanged:
+            // The secure-editor integration consumes this protocol event in the
+            // UI branch. Keep lifecycle behavior unchanged in this isolated PTY
+            // reliability change.
+            break
+
         case let .ready(cwd):
             run.sessionPhase = .ready
             run.workingDirectory = cwd
