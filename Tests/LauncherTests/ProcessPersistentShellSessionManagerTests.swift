@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import XCTest
 @testable import Launcher
@@ -19,6 +20,7 @@ final class ProcessPersistentShellSessionManagerTests: XCTestCase {
         let manager = makeManager()
         let id = ShellSessionID()
         let ready = expectation(description: "ready")
+        let echoReady = expectation(description: "input echo observed")
         let finished = expectation(description: "command finished")
         var transcript = ""
 
@@ -30,14 +32,19 @@ final class ProcessPersistentShellSessionManagerTests: XCTestCase {
             switch event {
             case .ready:
                 ready.fulfill()
+            case let .inputEchoStateChanged(state):
+                XCTAssertEqual(state, .enabled)
+                echoReady.fulfill()
             case .foregroundFinished:
                 finished.fulfill()
             default:
                 break
             }
         }))
-        wait(for: [ready], timeout: 5)
+        wait(for: [ready, echoReady], timeout: 5)
+        XCTAssertEqual(manager.inputEchoState(for: id), .enabled)
         XCTAssertFalse(transcript.contains("__launcher_run"), transcript)
+        XCTAssertFalse(transcript.contains("__launcher_private_b64"), transcript)
         XCTAssertTrue(manager.submitCommand(
             "[ -t 0 ] && [ -t 1 ] && "
                 + "[ \"$(ps -o tpgid= -p $$ | tr -d ' ')\" != '-1' ] "
@@ -88,6 +95,43 @@ final class ProcessPersistentShellSessionManagerTests: XCTestCase {
         XCTAssertTrue(transcript.contains(directory.path), transcript)
     }
 
+    func testUserProtocolNamespaceMutationCannotWedgeNextCommand() {
+        let manager = makeManager()
+        let id = ShellSessionID()
+        let ready = expectation(description: "ready")
+        let mutationFinished = expectation(description: "namespace mutation finished")
+        let recovered = expectation(description: "next command finished")
+        var finishes = 0
+        var transcript = ""
+
+        XCTAssertTrue(manager.startSession(id: id, onOutput: { _, text in
+            transcript += text
+        }, onEvent: { _, event in
+            switch event {
+            case .ready:
+                ready.fulfill()
+            case .foregroundFinished:
+                finishes += 1
+                (finishes == 1 ? mutationFinished : recovered).fulfill()
+            default:
+                break
+            }
+        }))
+        wait(for: [ready], timeout: 5)
+
+        // The original protocol depended on these mutable function/hook names;
+        // removing them made the manager wait forever on the next submission.
+        XCTAssertTrue(manager.submitCommand(
+            "unfunction __launcher_run; precmd_functions=()",
+            to: id
+        ))
+        wait(for: [mutationFinished], timeout: 5)
+        XCTAssertTrue(manager.submitCommand("echo PROTOCOL_SURVIVED", to: id))
+        wait(for: [recovered], timeout: 5)
+        XCTAssertTrue(transcript.contains("PROTOCOL_SURVIVED"), transcript)
+        XCTAssertFalse(transcript.contains("__launcher_private_b64"), transcript)
+    }
+
     func testForegroundReadAcceptsInputLine() {
         let manager = makeManager()
         let id = ShellSessionID()
@@ -106,9 +150,13 @@ final class ProcessPersistentShellSessionManagerTests: XCTestCase {
             }
         }))
         wait(for: [ready], timeout: 5)
-        XCTAssertFalse(manager.sendInputLine("too early", to: id))
+        XCTAssertEqual(
+            manager.submitInputLine("too early", to: id),
+            .rejected(.sessionNotForeground)
+        )
         XCTAssertTrue(manager.submitCommand("read answer; echo received:$answer", to: id))
         wait(for: [started], timeout: 5)
+        XCTAssertEqual(manager.inputEchoState(for: id), .enabled)
         XCTAssertTrue(manager.sendInputLine("hello interactive world", to: id))
         wait(for: [finished], timeout: 5)
         XCTAssertTrue(transcript.contains("received:hello interactive world"), transcript)
@@ -158,15 +206,97 @@ final class ProcessPersistentShellSessionManagerTests: XCTestCase {
 
         let maximumInput = String(
             repeating: "i",
-            count: ProcessPersistentShellSessionManager.maximumTerminalLineBytes - 1
+            count: ProcessPersistentShellSessionManager.maximumCanonicalInputBytes
         )
-        XCTAssertFalse(manager.sendInputLine(maximumInput + "i", to: id))
-        XCTAssertFalse(manager.sendInputLine("before\0after", to: id))
-        XCTAssertFalse(manager.sendInputLine("two\nrecords", to: id))
-        XCTAssertFalse(manager.sendInputLine("two\rrecords", to: id))
-        XCTAssertTrue(manager.sendInputLine(maximumInput, to: id))
+        XCTAssertEqual(
+            manager.submitInputLine(maximumInput + "i", to: id),
+            .rejected(.canonicalLineTooLong(
+                maximumBytes: ProcessPersistentShellSessionManager.maximumCanonicalInputBytes
+            ))
+        )
+        XCTAssertEqual(
+            manager.submitInputLine("before\0after", to: id),
+            .rejected(.containsNUL)
+        )
+        XCTAssertEqual(
+            manager.submitInputLine("two\nrecords", to: id),
+            .rejected(.containsLineBreak)
+        )
+        XCTAssertEqual(
+            manager.submitInputLine("two\rrecords", to: id),
+            .rejected(.containsLineBreak)
+        )
+        XCTAssertEqual(manager.submitInputLine(maximumInput, to: id), .accepted)
         wait(for: [inputFinished], timeout: 5)
         XCTAssertTrue(transcript.contains("input-length:\(maximumInput.utf8.count)"), transcript)
+    }
+
+    func testNonCanonicalForegroundAcceptsLongInputAndPublishesEchoTransitions() {
+        let manager = makeManager()
+        let id = ShellSessionID()
+        let ready = expectation(description: "ready")
+        let initialEcho = expectation(description: "initial echo enabled")
+        let rawReaderReady = expectation(description: "raw reader ready")
+        let echoDisabled = expectation(description: "echo disabled")
+        let echoRestored = expectation(description: "echo restored")
+        let finished = expectation(description: "raw reader finished")
+        var transcript = ""
+        var echoStates: [ShellInputEchoState] = []
+        var observedRawReader = false
+
+        XCTAssertTrue(manager.startSession(id: id, onOutput: { _, text in
+            transcript += text
+            if !observedRawReader, transcript.contains("RAW_READY") {
+                observedRawReader = true
+                rawReaderReady.fulfill()
+            }
+        }, onEvent: { _, event in
+            switch event {
+            case .ready:
+                ready.fulfill()
+            case let .inputEchoStateChanged(state):
+                echoStates.append(state)
+                if echoStates.count == 1, state == .enabled {
+                    initialEcho.fulfill()
+                } else if state == .disabled {
+                    echoDisabled.fulfill()
+                } else if echoStates.contains(.disabled), state == .enabled {
+                    echoRestored.fulfill()
+                }
+            case .foregroundFinished:
+                finished.fulfill()
+            default:
+                break
+            }
+        }))
+        wait(for: [ready, initialEcho], timeout: 5)
+        XCTAssertEqual(manager.inputEchoState(for: id), .enabled)
+
+        let perl = #"/bin/stty -icanon -echo min 1 time 0; /usr/bin/perl -e '$|=1; print "RAW_READY\n"; my $value=""; while (sysread(STDIN, my $character, 1)) { last if $character eq "\r" || $character eq "\n"; $value.=$character } print "RAW_LENGTH:".length($value)."\n";'; /bin/stty icanon echo"#
+        XCTAssertTrue(manager.submitCommand(perl, to: id))
+        wait(for: [rawReaderReady, echoDisabled], timeout: 5)
+        XCTAssertEqual(manager.inputEchoState(for: id), .disabled)
+
+        let overLimit = String(
+            repeating: "x",
+            count: ProcessPersistentShellSessionManager.maximumNonCanonicalInputBytes + 1
+        )
+        XCTAssertEqual(
+            manager.submitInputLine(overLimit, to: id),
+            .rejected(.nonCanonicalLineTooLong(
+                maximumBytes: ProcessPersistentShellSessionManager.maximumNonCanonicalInputBytes
+            ))
+        )
+
+        let longInput = String(repeating: "r", count: 8 * 1_024)
+        XCTAssertEqual(manager.submitInputLine(longInput, to: id), .accepted)
+        wait(for: [finished, echoRestored], timeout: 8)
+        XCTAssertTrue(
+            transcript.contains("RAW_LENGTH:\(longInput.utf8.count)"),
+            String(transcript.suffix(1_000))
+        )
+        XCTAssertEqual(manager.inputEchoState(for: id), .enabled)
+        XCTAssertEqual(echoStates, [.enabled, .disabled, .enabled])
     }
 
     func testStartupTimeoutClosesBlockedZshInitializationAsFailedToStart() throws {
@@ -241,6 +371,60 @@ final class ProcessPersistentShellSessionManagerTests: XCTestCase {
         XCTAssertTrue(manager.submitCommand("echo recovered", to: id))
         wait(for: [recovered], timeout: 5)
         XCTAssertTrue(transcript.contains("recovered"), transcript)
+    }
+
+    func testRepeatedInterruptCompletionAlwaysUsesAuthoritativeCWD() throws {
+        let firstDirectory = try makeTemporaryDirectory(named: "interrupt-first")
+        let secondDirectory = try makeTemporaryDirectory(named: "interrupt-second")
+        let manager = makeManager()
+        let id = ShellSessionID()
+        let ready = expectation(description: "ready")
+        var foregroundStarts = 0
+        var finishes: [(ScriptRunResult, String)] = []
+        var transcript = ""
+        var closedResult: ScriptRunResult?
+
+        XCTAssertTrue(manager.startSession(id: id, onOutput: { _, text in
+            transcript += text
+        }, onEvent: { _, event in
+            switch event {
+            case .ready:
+                ready.fulfill()
+            case .foregroundStarted:
+                foregroundStarts += 1
+            case let .foregroundFinished(result, cwd):
+                finishes.append((result, cwd))
+            case let .closed(result):
+                closedResult = result
+            default:
+                break
+            }
+        }))
+        wait(for: [ready], timeout: 5)
+
+        let iterations = 16
+        for iteration in 0..<iterations {
+            let directory = iteration.isMultiple(of: 2) ? firstDirectory : secondDirectory
+            XCTAssertTrue(manager.submitCommand(
+                "cd \(quote(directory.path)); /bin/sleep 30",
+                to: id
+            ))
+            XCTAssertTrue(waitUntil(timeout: 4) { foregroundStarts > iteration })
+            manager.interruptForeground(in: id)
+            XCTAssertTrue(waitUntil(timeout: 4) { finishes.count > iteration }, """
+            iteration \(iteration), starts \(foregroundStarts), finishes \(finishes), \
+            active \(manager.activeSessionIDs.contains(id)), closed \(String(describing: closedResult)), \
+            transcript \(transcript.suffix(2_000))
+            """)
+            guard finishes.count > iteration else { break }
+            XCTAssertEqual(finishes[iteration].0, .cancelled)
+            XCTAssertEqual(
+                finishes[iteration].1,
+                directory.path,
+                "iteration \(iteration) published cached cwd before its authoritative control frame"
+            )
+        }
+        XCTAssertEqual(finishes.count, iterations)
     }
 
     func testCompletionUsesSessionCWDAndPATHWithUTF16Range() throws {
@@ -372,6 +556,14 @@ final class ProcessPersistentShellSessionManagerTests: XCTestCase {
         XCTAssertTrue(manager.activeSessionIDs.isEmpty)
     }
 
+    func testCloseSessionTerminatesMoreThan128BackgroundJobControlChildren() {
+        exerciseBackgroundChildCleanup(terminateImmediately: false)
+    }
+
+    func testTerminateAllImmediatelyTerminatesMoreThan128BackgroundJobControlChildren() {
+        exerciseBackgroundChildCleanup(terminateImmediately: true)
+    }
+
     func testFastFinalOutputIsDeliveredBeforeFinishedAndClosed() {
         let manager = makeManager()
         let id = ShellSessionID()
@@ -439,6 +631,85 @@ final class ProcessPersistentShellSessionManagerTests: XCTestCase {
         wait(for: [finished], timeout: 5)
         XCTAssertTrue(transcript.contains("READER:user supplied"), transcript)
         XCTAssertFalse(transcript.contains("__launcher_finish 130"), transcript)
+    }
+
+    private func exerciseBackgroundChildCleanup(terminateImmediately: Bool) {
+        let manager = makeManager()
+        let id = ShellSessionID()
+        let ready = expectation(description: "ready")
+        let closed = expectation(description: "closed")
+        var transcript = ""
+
+        XCTAssertTrue(manager.startSession(id: id, onOutput: { _, text in
+            transcript += text
+        }, onEvent: { _, event in
+            switch event {
+            case .ready:
+                ready.fulfill()
+            case .closed:
+                closed.fulfill()
+            default:
+                break
+            }
+        }))
+        wait(for: [ready], timeout: 5)
+
+        let childCount = 140
+        let command = "for index in {1..\(childCount)}; do "
+            + "/bin/sleep 30 & print -r -- CHILD:$!; "
+            + "done; print -r -- ALL_CHILDREN_STARTED; wait"
+        XCTAssertTrue(manager.submitCommand(command, to: id))
+        XCTAssertTrue(waitUntil(timeout: 10) {
+            transcript.contains("ALL_CHILDREN_STARTED")
+        }, String(transcript.suffix(2_000)))
+
+        defer {
+            // A failing assertion must never leave stress-probe processes alive.
+            terminateProcesses(childPIDs(in: transcript))
+        }
+        let pids = childPIDs(in: transcript)
+        XCTAssertEqual(pids.count, childCount, String(transcript.suffix(4_000)))
+
+        if terminateImmediately {
+            manager.terminateAllImmediately()
+        } else {
+            manager.closeSession(id)
+        }
+        wait(for: [closed], timeout: 8)
+        XCTAssertTrue(waitUntil(timeout: 5) {
+            pids.allSatisfy { !processExists($0) }
+        }, "surviving children: \(pids.filter(processExists))")
+        XCTAssertFalse(manager.activeSessionIDs.contains(id))
+    }
+
+    @discardableResult
+    private func waitUntil(
+        timeout: TimeInterval,
+        pollInterval: TimeInterval = 0.01,
+        _ predicate: () -> Bool
+    ) -> Bool {
+        let deadline = Date(timeIntervalSinceNow: timeout)
+        while !predicate(), Date() < deadline {
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: pollInterval))
+        }
+        return predicate()
+    }
+
+    private func childPIDs(in transcript: String) -> [pid_t] {
+        transcript.split(separator: "\n").compactMap { line in
+            guard line.hasPrefix("CHILD:") else { return nil }
+            return pid_t(line.dropFirst("CHILD:".count))
+        }
+    }
+
+    private func processExists(_ pid: pid_t) -> Bool {
+        if kill(pid, 0) == 0 { return true }
+        return errno != ESRCH
+    }
+
+    private func terminateProcesses(_ pids: [pid_t]) {
+        for pid in pids where processExists(pid) { _ = kill(pid, SIGKILL) }
+        _ = waitUntil(timeout: 2) { pids.allSatisfy { !self.processExists($0) } }
     }
 
     private func makeManager(
