@@ -216,9 +216,24 @@ final class LauncherTerminalSession: ObservableObject,
 
     func terminalDidClose(processAlive _: Bool) {
         guard !isTerminated else { return }
+        surfaceGeneration &+= 1
+        let generation = surfaceGeneration
         resolvePasteConfirmation(allow: false)
         hasAttachedSurface = false
+        pendingInput = ""
         phase = .exited
+
+        // Ghostty requests closure before releasing its surface; even a false
+        // processAlive can describe a live shell waiting at its prompt. Defer
+        // teardown until the native callback returns, retaining the view so
+        // Restart can create a fresh shell. A newer restart or termination
+        // supersedes this close request.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.isTerminated,
+                  self.surfaceGeneration == generation else { return }
+            self.terminalView?.controller = nil
+            self.controller = nil
+        }
     }
 
     func terminalDidAttachSurface(_: TerminalSurface) {

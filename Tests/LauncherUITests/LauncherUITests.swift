@@ -1,3 +1,4 @@
+import Darwin
 import XCTest
 
 final class LauncherUITests: XCTestCase {
@@ -240,6 +241,44 @@ final class LauncherUITests: XCTestCase {
         )
         XCTAssertFalse(app.textFields["launcher.search"].exists)
         XCTAssertFalse(app.secureTextFields["launcher.search"].exists)
+    }
+
+    func testCommandWClosesTerminalProcessAndAllowsRestart() throws {
+        let marker = FileManager.default.temporaryDirectory
+            .appendingPathComponent("launcher-terminal-close-\(UUID().uuidString).txt")
+        defer { try? FileManager.default.removeItem(at: marker) }
+
+        let terminal = enterNativeTerminal()
+        sendTerminalCommand("/usr/bin/printf '%s' \"$$\" > '\(marker.path)'", to: terminal)
+        let processID = try XCTUnwrap(waitForFileContents(at: marker).flatMap(Int32.init))
+        XCTAssertEqual(kill(processID, 0), 0, "the terminal shell should be alive before closing")
+
+        app.typeKey("w", modifierFlags: [.command])
+
+        let restart = app.buttons["shell.status.restart"]
+        XCTAssertTrue(restart.waitForExistence(timeout: 5))
+        let exited = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in
+                kill(processID, 0) == -1 && errno == ESRCH
+            },
+            object: nil
+        )
+        XCTAssertEqual(
+            XCTWaiter.wait(for: [exited], timeout: 8),
+            .completed,
+            "Command-W must close the shell process, not only display an exited status"
+        )
+
+        restart.click()
+        let restartedTerminal = waitForNativeTerminal()
+        sendTerminalCommand("cd /tmp", to: restartedTerminal)
+        XCTAssertTrue(
+            waitForElement(
+                app.descendants(matching: .any)["shell.workingDirectory"].firstMatch,
+                containing: "tmp"
+            ),
+            "the closed terminal should restart as a usable shell"
+        )
     }
 
     func testNativeTerminalRestoresColorEnvironment() throws {

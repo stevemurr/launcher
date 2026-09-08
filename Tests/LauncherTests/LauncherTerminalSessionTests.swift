@@ -97,6 +97,65 @@ final class LauncherTerminalSessionTests: XCTestCase {
     }
 
     @MainActor
+    func testCloseRequestsReleaseSurfaceAndAllowRestartOnRetainedView() async {
+        for processAlive in [false, true] {
+            let session = LauncherTerminalSession()
+            let terminalView = session.makeTerminalView()
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 320, height: 180),
+                styleMask: [.borderless],
+                backing: .buffered,
+                defer: false
+            )
+            defer {
+                session.terminate()
+                window.contentView = nil
+            }
+            // Mount without ordering the window front or taking host focus.
+            window.contentView = terminalView
+            session.setVisible(true)
+            XCTAssertEqual(session.phase, .ready)
+            weak let originalController = terminalView.controller
+            XCTAssertNotNil(originalController)
+
+            session.terminalDidClose(processAlive: processAlive)
+
+            XCTAssertEqual(session.phase, .exited)
+            XCTAssertNotNil(terminalView.controller, "teardown must wait until the native callback returns")
+            await drainMainQueue()
+
+            XCTAssertNil(terminalView.controller, "close must release the surface for processAlive=\(processAlive)")
+            XCTAssertNil(originalController, "the session must also release its controller ownership")
+            XCTAssertFalse(terminalView.performBindingAction("reset_font_size"), "the closed surface must no longer accept actions")
+            XCTAssertTrue(session.makeTerminalView() === terminalView)
+
+            session.restart()
+
+            XCTAssertEqual(session.phase, .ready)
+            XCTAssertNotNil(terminalView.controller)
+            XCTAssertTrue(session.makeTerminalView() === terminalView)
+            XCTAssertTrue(terminalView.performBindingAction("reset_font_size"))
+        }
+    }
+
+    @MainActor
+    func testDeferredCloseDoesNotReleaseAnImmediatelyRestartedSurface() async {
+        let session = LauncherTerminalSession()
+        let terminalView = session.makeTerminalView()
+        defer { session.terminate() }
+
+        session.terminalDidClose(processAlive: true)
+        session.restart()
+        let restartedController = terminalView.controller
+        XCTAssertNotNil(restartedController)
+
+        await drainMainQueue()
+
+        XCTAssertTrue(terminalView.controller === restartedController)
+        XCTAssertEqual(session.phase, .starting, "an old close request must not change the restarted session")
+    }
+
+    @MainActor
     func testFocusRefusesHiddenAndTerminatedSession() {
         let session = LauncherTerminalSession()
         let terminalView = session.makeTerminalView()
@@ -455,6 +514,13 @@ final class LauncherTerminalSessionTests: XCTestCase {
         model.onCreateNativeTerminalSession = create
         model.onSelectNativeTerminalSession = select
         model.onCloseNativeTerminalSession = close
+    }
+
+    @MainActor
+    private func drainMainQueue() async {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
     }
 
     private func terminalSummary(
