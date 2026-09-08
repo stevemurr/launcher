@@ -10,6 +10,11 @@ final class LauncherUITests: XCTestCase {
         if name.contains("testDarkAppearance") {
             app.launchArguments.append("--ui-testing-dark")
         }
+        if name.contains("testNativeTerminalRestoresColorEnvironment") {
+            // Reproduce launching Launcher from a host (including Codex) that
+            // exports the presentation-only NO_COLOR policy.
+            app.launchEnvironment["NO_COLOR"] = "1"
+        }
         app.launch()
 
         XCTAssertTrue(
@@ -62,249 +67,197 @@ final class LauncherUITests: XCTestCase {
         add(attachment)
     }
 
-    func testShellModeExpandsAndRunsConsecutiveCommandsInline() {
-        let search = app.textFields["launcher.search"]
-        search.click()
-        // Keep the expected output out of the command text itself so the
-        // assertion below cannot pass merely because the transcript echoes the
-        // prompt before the process has produced anything.
-        let firstCommand = "/usr/bin/printf 'shell-%s' one"
-        search.typeText("> \(firstCommand)")
-
-        let triggerConsumed = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "value == %@", firstCommand),
-            object: search
-        )
-        let triggerResult = XCTWaiter.wait(for: [triggerConsumed], timeout: 3)
-        XCTAssertEqual(
-            triggerResult,
-            .completed,
-            "the > trigger must disappear instead of becoming shell input; actual value: \(String(describing: search.value))"
-        )
-
+    func testShellModeUsesAFullNativeTerminalForConsecutiveCommands() {
+        let terminal = enterNativeTerminal()
         let console = app.descendants(matching: .any)["shell.console"].firstMatch
-        let output = app.descendants(matching: .any)["shell.output"].firstMatch
-        let status = app.descendants(matching: .any)["shell.output.status"].firstMatch
-        XCTAssertTrue(console.waitForExistence(timeout: 3))
-        XCTAssertTrue(output.exists)
-        XCTAssertTrue(waitForPanelWidth(990), "shell mode did not expand to the drawer width")
+
+        XCTAssertTrue(waitForPanelWidth(990), "terminal mode did not expand to the drawer width")
+        XCTAssertFalse(app.textFields["launcher.search"].exists, "launcher search must leave the hierarchy")
+        XCTAssertFalse(app.descendants(matching: .any)["shell.output"].firstMatch.exists)
+        XCTAssertFalse(app.buttons["shell.run"].exists)
+        XCTAssertFalse(app.buttons["footer.actions"].exists)
+        XCTAssertTrue(app.buttons["shell.returnToLauncher"].exists)
+
         let dialog = app.dialogs.firstMatch
         let panelFrame = (dialog.exists ? dialog : app.windows.firstMatch).frame
         XCTAssertEqual(console.frame.minX, panelFrame.minX, accuracy: 2)
         XCTAssertEqual(console.frame.maxX, panelFrame.maxX, accuracy: 2)
-        XCTAssertFalse(app.buttons["footer.actions"].exists)
+        XCTAssertGreaterThanOrEqual(
+            terminal.frame.minX - panelFrame.minX,
+            2,
+            "the native terminal should sit inside the thin left bezel"
+        )
+        XCTAssertGreaterThanOrEqual(
+            panelFrame.maxX - terminal.frame.maxX,
+            2,
+            "the native terminal should sit inside the thin right bezel"
+        )
 
-        search.typeKey(.return, modifierFlags: [])
-        let firstOutput = XCTNSPredicateExpectation(
-            predicate: NSPredicate(
-                format: "label CONTAINS %@ OR value CONTAINS %@",
-                "shell-one",
-                "shell-one"
-            ),
-            object: output
-        )
-        let firstOutputResult = XCTWaiter.wait(for: [firstOutput], timeout: 6)
-        XCTAssertEqual(
-            firstOutputResult,
-            .completed,
-            "missing shell output; output label=\(output.label), value=\(String(describing: output.value)), "
-                + "status label=\(status.label), value=\(String(describing: status.value))"
-        )
-        let firstReady = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", "Ready", "Ready"),
-            object: status
-        )
-        XCTAssertEqual(XCTWaiter.wait(for: [firstReady], timeout: 6), .completed)
-
-        // Return leaves the existing AppKit field editor focused with an empty
-        // raw shell draft, so a second command needs no click.
-        XCTAssertEqual(search.value as? String, "")
-        app.typeText("/usr/bin/printf 'shell-%s' two")
-        app.typeKey(.return, modifierFlags: [])
-        let secondOutput = XCTNSPredicateExpectation(
-            predicate: NSPredicate(
-                format: "label CONTAINS %@ OR value CONTAINS %@",
-                "shell-two",
-                "shell-two"
-            ),
-            object: output
-        )
-        XCTAssertEqual(XCTWaiter.wait(for: [secondOutput], timeout: 6), .completed)
-        let secondReady = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", "Ready", "Ready"),
-            object: status
-        )
-        XCTAssertEqual(XCTWaiter.wait(for: [secondReady], timeout: 6), .completed)
-        XCTAssertTrue(waitForPanelWidth(990))
-
-        // `cd` mutates the persistent shell rather than a throwaway process.
-        // Wait for the header's cwd event before submitting pwd, then prove the
-        // following command observes that same directory.
-        app.typeText("cd /tmp")
-        app.typeKey(.return, modifierFlags: [])
         let workingDirectory = app.descendants(matching: .any)["shell.workingDirectory"].firstMatch
-        let changedDirectory = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", "tmp", "tmp"),
-            object: workingDirectory
+        sendTerminalCommand("cd /tmp", to: terminal)
+        XCTAssertTrue(
+            waitForElement(workingDirectory, containing: "tmp"),
+            "native shell did not change to /tmp"
         )
-        XCTAssertEqual(XCTWaiter.wait(for: [changedDirectory], timeout: 6), .completed)
 
-        app.typeText("/bin/pwd -P")
-        app.typeKey(.return, modifierFlags: [])
-        let persistentPWD = XCTNSPredicateExpectation(
-            predicate: NSPredicate(
-                format: "label CONTAINS %@ OR value CONTAINS %@",
-                "/tmp",
-                "/tmp"
-            ),
-            object: output
+        sendTerminalCommand("cd /var", to: terminal)
+        XCTAssertTrue(
+            waitForElement(workingDirectory, containing: "var"),
+            "a consecutive command did not reach the retained native shell"
         )
-        XCTAssertEqual(XCTWaiter.wait(for: [persistentPWD], timeout: 6), .completed)
-
-        // Exercise Control-C through the live AppKit field editor, not merely
-        // the text-field subclass, while a real process owns the runner.
-        app.typeText("/bin/sleep 30")
-        app.typeKey(.return, modifierFlags: [])
-        let running = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", "Running", "Running"),
-            object: status
-        )
-        XCTAssertEqual(XCTWaiter.wait(for: [running], timeout: 3), .completed)
-
-        // Escape leaves the process alive and returns to compact search. Its
-        // resumable row is pinned in a dedicated section ahead of normal items.
-        search.typeKey(.escape, modifierFlags: [])
-        XCTAssertTrue(waitForPanelWidth(774), "Escape did not leave the shell console")
-        XCTAssertTrue(app.staticTexts["Running Shells"].waitForExistence(timeout: 3))
-        XCTAssertFalse(console.exists)
-        XCTAssertEqual(search.value as? String, "")
-
-        // The pinned running-shell row is selected first. Return resumes the
-        // existing console; it must not launch another process.
-        search.typeKey(.return, modifierFlags: [])
-        XCTAssertTrue(console.waitForExistence(timeout: 3))
-        XCTAssertTrue(waitForPanelWidth(990), "running shell did not resume full-width console")
-        let resumed = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", "Running", "Running"),
-            object: status
-        )
-        XCTAssertEqual(XCTWaiter.wait(for: [resumed], timeout: 3), .completed)
-
-        search.typeKey("c", modifierFlags: [.control])
-        let readyForAnotherCommand = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "label CONTAINS %@", "Run Command"),
-            object: app.buttons["shell.run"]
-        )
-        XCTAssertEqual(XCTWaiter.wait(for: [readyForAnotherCommand], timeout: 6), .completed)
-
-        // Interrupting a foreground process must not kill the persistent shell.
-        // A fresh command in the same resumed session should still execute.
-        app.typeText("/usr/bin/printf 'shell-%s' after-interrupt")
-        app.typeKey(.return, modifierFlags: [])
-        let afterInterrupt = XCTNSPredicateExpectation(
-            predicate: NSPredicate(
-                format: "label CONTAINS %@ OR value CONTAINS %@",
-                "shell-after-interrupt",
-                "shell-after-interrupt"
-            ),
-            object: output
-        )
-        XCTAssertEqual(XCTWaiter.wait(for: [afterInterrupt], timeout: 6), .completed)
 
         let attachment = XCTAttachment(screenshot: app.screenshot())
-        attachment.name = "Full-width shell console"
+        attachment.name = "Full-width native terminal"
         attachment.lifetime = .keepAlways
         add(attachment)
     }
 
-    func testShellTabCompletionShowsCandidatesAndReturnAcceptsWithoutRunning() {
+    func testNativeTerminalSessionsListNewestFirstAndResumeTheirExactState() {
+        let firstTerminal = enterNativeTerminal()
+        let workingDirectory = app.descendants(matching: .any)["shell.workingDirectory"].firstMatch
+
+        sendTerminalCommand("cd /tmp", to: firstTerminal)
+        XCTAssertTrue(
+            waitForElement(workingDirectory, containing: "tmp"),
+            "Shell 1 did not adopt its expected /tmp working directory"
+        )
+
+        returnToLauncherFromTerminal()
+        XCTAssertTrue(app.staticTexts["Running Shells"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["result.Shell 1"].waitForExistence(timeout: 5))
+        XCTAssertTrue(
+            waitForRunningShellRows(["result.Shell 1"]),
+            "the first native terminal was not listed as Shell 1"
+        )
+
+        // A bare > always creates a fresh terminal. Existing terminals resume
+        // through their pinned result rows instead.
+        let secondTerminal = enterNativeTerminal()
+        let secondWorkingDirectory = app.descendants(matching: .any)["shell.workingDirectory"].firstMatch
+        sendTerminalCommand("cd /var", to: secondTerminal)
+        XCTAssertTrue(
+            waitForElement(secondWorkingDirectory, containing: "var"),
+            "Shell 2 did not adopt its expected /var working directory"
+        )
+
+        returnToLauncherFromTerminal()
+        XCTAssertTrue(
+            waitForRunningShellRows(["result.Shell 2", "result.Shell 1"]),
+            "native terminals must be pinned newest-first as Shell 2, then Shell 1"
+        )
+
+        // Resume the older terminal first and prove that its PTY state did not
+        // bleed together with the newer terminal's state. Use the keyboard so
+        // this also pins the visual-selection regression for retained shells.
         let search = app.textFields["launcher.search"]
-        search.click()
-        let prefix = "echo 😀 /usr/bin/print"
-        let suffix = " --suffix"
-        let draft = prefix + suffix
-        search.typeText("> /usr/bin/true")
+        let newestShell = app.buttons["result.Shell 2"]
+        let olderShell = app.buttons["result.Shell 1"]
+        XCTAssertTrue(waitForSelection(newestShell), "the leading shell row was not visibly selected")
+        search.typeKey(.downArrow, modifierFlags: [])
+        XCTAssertTrue(waitForSelection(olderShell), "keyboard selection did not repaint Shell 1")
+        search.typeKey(.downArrow, modifierFlags: [])
+        XCTAssertTrue(
+            waitForSelection(app.buttons["result.Launcher Settings"]),
+            "selection did not repaint across the Running Shells/Results boundary"
+        )
+        search.typeKey(.upArrow, modifierFlags: [])
+        XCTAssertTrue(waitForSelection(olderShell), "keyboard selection did not repaint back to Shell 1")
         search.typeKey(.return, modifierFlags: [])
-
-        let status = app.descendants(matching: .any)["shell.output.status"].firstMatch
-        let sessionReady = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", "Ready", "Ready"),
-            object: status
+        XCTAssertTrue(waitForNativeTerminal().exists)
+        let resumedFirstDirectory = app.descendants(matching: .any)["shell.workingDirectory"].firstMatch
+        XCTAssertTrue(
+            waitForElement(resumedFirstDirectory, containing: "tmp"),
+            "resuming Shell 1 did not restore its /tmp working directory"
         )
-        XCTAssertEqual(XCTWaiter.wait(for: [sessionReady], timeout: 6), .completed)
-        XCTAssertEqual(search.value as? String, "")
-        app.typeText(draft)
-        for _ in 0..<(suffix as NSString).length {
-            search.typeKey(.leftArrow, modifierFlags: [])
-        }
 
-        let triggerConsumed = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "value == %@", draft),
-            object: search
+        returnToLauncherFromTerminal()
+        XCTAssertTrue(
+            waitForRunningShellRows(["result.Shell 2", "result.Shell 1"]),
+            "resuming Shell 1 must not reorder or replace either session"
         )
-        XCTAssertEqual(XCTWaiter.wait(for: [triggerConsumed], timeout: 3), .completed)
 
-        search.typeKey(.tab, modifierFlags: [])
-        let palette = app.descendants(matching: .any)["shell.completions"].firstMatch
-        XCTAssertTrue(palette.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.descendants(matching: .any)["shell.completion.0"].firstMatch.exists)
-        search.typeKey(.tab, modifierFlags: [.shift])
-
-        // While candidates are open Return accepts the selected replacement;
-        // it must not also submit the newly completed command, and the suffix
-        // after the live field-editor caret must remain untouched.
-        search.typeKey(.return, modifierFlags: [])
-        let accepted = XCTNSPredicateExpectation(
-            predicate: NSPredicate(
-                format: "value BEGINSWITH %@ AND value ENDSWITH %@ AND value != %@",
-                prefix,
-                suffix,
-                draft
-            ),
-            object: search
+        let resumedSearch = app.textFields["launcher.search"]
+        XCTAssertTrue(waitForSelection(app.buttons["result.Shell 2"]))
+        resumedSearch.typeKey(.return, modifierFlags: [])
+        XCTAssertTrue(waitForNativeTerminal().exists)
+        let resumedSecondDirectory = app.descendants(matching: .any)["shell.workingDirectory"].firstMatch
+        XCTAssertTrue(
+            waitForElement(resumedSecondDirectory, containing: "var"),
+            "resuming Shell 2 did not restore its /var working directory"
         )
-        XCTAssertEqual(XCTWaiter.wait(for: [accepted], timeout: 3), .completed)
-        XCTAssertFalse(palette.exists)
 
-        search.typeKey(.escape, modifierFlags: [])
-        XCTAssertTrue(waitForPanelWidth(774))
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = "Resumed native Shell 2"
+        attachment.lifetime = .keepAlways
+        add(attachment)
     }
 
-    func testShellPasswordPromptUsesSecureAccessibilityUntilInputIsSent() {
+    func testShellEscapeStaysInTerminalAndCommandKReturnsToLauncher() {
+        let terminal = enterNativeTerminal()
+        let console = app.descendants(matching: .any)["shell.console"].firstMatch
+
+        terminal.click()
+        app.typeText("unfinished terminal input")
+        app.typeKey(.escape, modifierFlags: [])
+
+        XCTAssertTrue(console.exists, "Escape must remain a normal terminal key")
+        XCTAssertTrue(terminal.exists)
+        XCTAssertFalse(app.textFields["launcher.search"].exists)
+        XCTAssertTrue(waitForPanelWidth(990), "Escape unexpectedly collapsed terminal mode")
+
+        app.buttons["header.settings"].click()
+        XCTAssertTrue(app.staticTexts["settings.title"].waitForExistence(timeout: 3))
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(
+            console.waitForExistence(timeout: 5),
+            "Escape in Settings should return to the retained terminal"
+        )
+
+        app.typeKey("k", modifierFlags: [.command])
+
         let search = app.textFields["launcher.search"]
-        search.click()
-        search.typeText("> read -s 'secret?Password: '; print accepted")
-        search.typeKey(.return, modifierFlags: [])
+        XCTAssertTrue(search.waitForExistence(timeout: 5), "Command-K did not return to the launcher")
+        XCTAssertTrue(waitForPanelWidth(774), "Command-K did not restore the compact launcher width")
+        XCTAssertFalse(console.exists)
+        XCTAssertEqual(search.value as? String, "")
+    }
 
-        let secureInput = app.secureTextFields["launcher.search"]
-        XCTAssertTrue(
-            secureInput.waitForExistence(timeout: 8),
-            "the launcher did not adopt a secure editor after the PTY disabled echo"
-        )
-        let secret = "top-secret-password"
-        app.typeText(secret)
+    func testShellTerminalOwnsForegroundStandardInputAndInterrupts() {
+        let terminal = enterNativeTerminal()
+        let workingDirectory = app.descendants(matching: .any)["shell.workingDirectory"].firstMatch
 
-        let accessibleValue = String(describing: secureInput.value)
-        XCTAssertFalse(accessibleValue.contains(secret), "VoiceOver/XCUITest exposed the password")
-        XCTAssertFalse(secureInput.label.contains(secret))
-
+        sendTerminalCommand("/bin/cat", to: terminal)
+        Thread.sleep(forTimeInterval: 0.4)
+        app.typeText("native-terminal-input")
         app.typeKey(.return, modifierFlags: [])
+        app.typeKey("c", modifierFlags: [.control])
+        Thread.sleep(forTimeInterval: 0.4)
+
+        sendTerminalCommand("cd /tmp", to: terminal)
         XCTAssertTrue(
-            app.textFields["launcher.search"].waitForExistence(timeout: 8),
-            "the launcher did not return to ordinary shell input after echo was restored"
+            waitForElement(workingDirectory, containing: "tmp"),
+            "Control-C should interrupt the foreground program without killing the terminal shell"
         )
-        let output = app.descendants(matching: .any)["shell.output"].firstMatch
-        let accepted = XCTNSPredicateExpectation(
-            predicate: NSPredicate(
-                format: "label CONTAINS %@ OR value CONTAINS %@",
-                "accepted",
-                "accepted"
-            ),
-            object: output
+        XCTAssertFalse(app.textFields["launcher.search"].exists)
+        XCTAssertFalse(app.secureTextFields["launcher.search"].exists)
+    }
+
+    func testNativeTerminalRestoresColorEnvironment() throws {
+        let marker = FileManager.default.temporaryDirectory
+            .appendingPathComponent("launcher-terminal-color-\(UUID().uuidString).txt")
+        defer { try? FileManager.default.removeItem(at: marker) }
+
+        let terminal = enterNativeTerminal()
+        sendTerminalCommand(
+            "/usr/bin/printf '%s|%s|%s' \"$TERM\" \"$COLORTERM\" \"${NO_COLOR-unset}\" > '\(marker.path)'",
+            to: terminal
         )
-        XCTAssertEqual(XCTWaiter.wait(for: [accepted], timeout: 8), .completed)
-        XCTAssertFalse(output.label.contains(secret))
-        XCTAssertFalse(String(describing: output.value).contains(secret))
+
+        XCTAssertEqual(
+            waitForFileContents(at: marker),
+            "xterm-256color|truecolor|unset",
+            "Ghostty should supply terminal capabilities without inheriting the host's NO_COLOR policy"
+        )
     }
 
     // Keyboard-driven on purpose: moving the mouse across result rows changes
@@ -422,6 +375,145 @@ final class LauncherUITests: XCTestCase {
 
         XCTAssertTrue(waitForPanelWidth(774), "the first Escape should only close the pane")
         XCTAssertTrue(search.exists, "the first Escape must not hide the launcher")
+    }
+
+    private func enterNativeTerminal(
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) -> XCUIElement {
+        let search = app.textFields["launcher.search"]
+        search.click()
+        search.typeText(">")
+
+        let terminal = waitForNativeTerminal(file: file, line: line)
+        XCTAssertFalse(
+            search.exists,
+            "terminal mode must remove the launcher input field",
+            file: file,
+            line: line
+        )
+        return terminal
+    }
+
+    private func waitForNativeTerminal(
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) -> XCUIElement {
+        let console = app.descendants(matching: .any)["shell.console"].firstMatch
+        let terminal = app.descendants(matching: .any)["launcher.terminal.surface"].firstMatch
+        XCTAssertTrue(
+            console.waitForExistence(timeout: 5),
+            "the > trigger did not enter terminal mode",
+            file: file,
+            line: line
+        )
+        XCTAssertTrue(
+            terminal.waitForExistence(timeout: 8),
+            "the native Ghostty surface did not appear",
+            file: file,
+            line: line
+        )
+
+        let status = app.descendants(matching: .any)["shell.status"].firstMatch
+        let ready = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label == %@ OR value == %@", "Ready", "Ready"),
+            object: status
+        )
+        XCTAssertEqual(
+            XCTWaiter.wait(for: [ready], timeout: 8),
+            .completed,
+            "the native terminal surface did not become ready",
+            file: file,
+            line: line
+        )
+        return terminal
+    }
+
+    @discardableResult
+    private func returnToLauncherFromTerminal(
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) -> XCUIElement {
+        app.typeKey("k", modifierFlags: [.command])
+        let search = app.textFields["launcher.search"]
+        XCTAssertTrue(
+            search.waitForExistence(timeout: 5),
+            "Command-K did not return to launcher search",
+            file: file,
+            line: line
+        )
+        XCTAssertTrue(
+            waitForPanelWidth(774),
+            "Command-K did not restore the compact launcher width",
+            file: file,
+            line: line
+        )
+        return search
+    }
+
+    private func sendTerminalCommand(_ command: String, to terminal: XCUIElement) {
+        terminal.click()
+        app.typeText(command)
+        app.typeKey(.return, modifierFlags: [])
+    }
+
+    private func waitForElement(
+        _ element: XCUIElement,
+        containing expectedValue: String,
+        timeout: TimeInterval = 8
+    ) -> Bool {
+        let expectation = XCTNSPredicateExpectation(
+            predicate: NSPredicate(
+                format: "label CONTAINS %@ OR value CONTAINS %@",
+                expectedValue,
+                expectedValue
+            ),
+            object: element
+        )
+        return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
+    }
+
+    private func waitForRunningShellRows(
+        _ expectedIdentifiers: [String],
+        timeout: TimeInterval = 5
+    ) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        let predicate = NSPredicate(format: "identifier BEGINSWITH %@", "result.Shell ")
+        while Date() < deadline {
+            let identifiers = app.buttons
+                .matching(predicate)
+                .allElementsBoundByIndex
+                .map(\.identifier)
+            if identifiers == expectedIdentifiers { return true }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        return false
+    }
+
+    private func waitForSelection(
+        _ element: XCUIElement,
+        timeout: TimeInterval = 3
+    ) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if element.exists, element.value as? String == "Selected" { return true }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        return false
+    }
+
+    private func waitForFileContents(
+        at url: URL,
+        timeout: TimeInterval = 5
+    ) -> String? {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if let contents = try? String(contentsOf: url, encoding: .utf8) {
+                return contents
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        return nil
     }
 
     /// Typing closes the pane from inside controlTextDidChange, which resizes

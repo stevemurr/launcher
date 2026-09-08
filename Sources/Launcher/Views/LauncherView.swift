@@ -3,7 +3,17 @@ import SwiftUI
 
 struct LauncherRootView: View {
     @ObservedObject var model: LauncherModel
+    @ObservedObject var terminalStore: LauncherTerminalStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    @MainActor
+    init(
+        model: LauncherModel,
+        terminalStore: LauncherTerminalStore
+    ) {
+        self.model = model
+        self.terminalStore = terminalStore
+    }
 
     private var panelWidth: CGFloat {
         model.isPanelExpanded ? LauncherStyle.expandedPanelWidth : LauncherStyle.panelWidth
@@ -29,7 +39,10 @@ struct LauncherRootView: View {
             Group {
                 switch model.screen {
                 case .search:
-                    LauncherSearchView(model: model)
+                    LauncherSearchView(
+                        model: model,
+                        terminalStore: terminalStore
+                    )
                 case .settings:
                     LauncherSettingsView(model: model, settings: model.settings)
                 case .createScript:
@@ -91,6 +104,7 @@ struct LauncherRootView: View {
 
 private struct LauncherSearchView: View {
     @ObservedObject var model: LauncherModel
+    @ObservedObject var terminalStore: LauncherTerminalStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// The results region shrinks so the pane costs less window than its width.
@@ -103,6 +117,44 @@ private struct LauncherSearchView: View {
     }
 
     var body: some View {
+        Group {
+            if model.isShellMode {
+                if let id = model.selectedShellSessionID,
+                   let terminalSession = terminalStore.session(for: id) {
+                    ShellConsoleView(
+                        model: model,
+                        terminalSession: terminalSession,
+                        displayName: terminalStore.summaries.first(where: { $0.id == id })?.displayName
+                            ?? "Shell"
+                    )
+                    .id(id.rawValue)
+                    .frame(width: LauncherStyle.expandedPanelWidth)
+                    .frame(maxHeight: .infinity)
+                } else {
+                    unavailableTerminal
+                }
+            } else {
+                launcherContent
+            }
+        }
+    }
+
+    private var unavailableTerminal: some View {
+        VStack(spacing: 14) {
+            Text("Terminal unavailable")
+                .font(.system(size: 15, weight: .semibold))
+            Button("Return to Launcher") {
+                model.leaveShellMode()
+            }
+            .accessibilityIdentifier("shell.unavailable.return")
+        }
+        .foregroundStyle(Color.white.opacity(0.82))
+        .frame(width: LauncherStyle.expandedPanelWidth)
+        .frame(maxHeight: .infinity)
+        .background(Color.launcherSurface)
+    }
+
+    private var launcherContent: some View {
         VStack(spacing: 0) {
             // Header and footer span the whole window so the overlay palettes
             // stay attached to the controls that trigger them.
@@ -111,64 +163,36 @@ private struct LauncherSearchView: View {
 
             Divider().opacity(0.65)
 
-            Group {
-                if model.isShellMode {
-                    ShellConsoleView(model: model)
-                        .frame(width: LauncherStyle.expandedPanelWidth)
-                        .frame(maxHeight: .infinity)
-                } else {
-                    HStack(spacing: 0) {
-                        Group {
-                            if model.isFileBrowsing {
-                                FileBrowserList(model: model)
-                            } else {
-                                resultsList
-                            }
-                        }
-                        .frame(width: resultsRegionWidth)
-                        .frame(maxHeight: .infinity)
-
-                        if model.isOutputPanePresented {
-                            ScriptOutputPane(model: model)
-                                .frame(width: LauncherStyle.outputPaneWidth)
-                                .frame(maxHeight: .infinity)
-                                .overlay(alignment: .leading) {
-                                    Rectangle()
-                                        .fill(Color.launcherSeparator.opacity(0.65))
-                                        .frame(width: 1)
-                                }
-                                .transition(outputPaneTransition)
-                        }
+            HStack(spacing: 0) {
+                Group {
+                    if model.isFileBrowsing {
+                        FileBrowserList(model: model)
+                    } else {
+                        resultsList
                     }
+                }
+                .frame(width: resultsRegionWidth)
+                .frame(maxHeight: .infinity)
+
+                if model.isOutputPanePresented {
+                    ScriptOutputPane(model: model)
+                        .frame(width: LauncherStyle.outputPaneWidth)
+                        .frame(maxHeight: .infinity)
+                        .overlay(alignment: .leading) {
+                            Rectangle()
+                                .fill(Color.launcherSeparator.opacity(0.65))
+                                .frame(width: 1)
+                        }
+                        .transition(outputPaneTransition)
                 }
             }
             .frame(maxHeight: .infinity)
 
             Divider().opacity(0.65)
 
-            Group {
-                if model.isShellMode {
-                    shellFooter
-                } else {
-                    footer
-                }
-            }
+            footer
                 .frame(height: LauncherStyle.footerHeight)
         }
-        .overlay(alignment: .topLeading) {
-            if model.isShellMode, !model.shellCompletions.isEmpty {
-                ShellCompletionPalette(
-                    candidates: model.shellCompletions,
-                    selectedIndex: model.shellCompletionSelectionIndex,
-                    onAccept: { model.acceptShellCompletion(at: $0) }
-                )
-                .padding(.leading, 14)
-                .padding(.top, LauncherStyle.headerHeight + 5)
-                .transition(.opacity.combined(with: .move(edge: .top)))
-                .zIndex(10)
-            }
-        }
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.1), value: model.shellCompletions)
     }
 
     private var searchHeader: some View {
@@ -192,35 +216,14 @@ private struct LauncherSearchView: View {
                 text: $model.query,
                 focusToken: model.focusToken,
                 isFocusTarget: model.focusTarget == .search,
-                isSecureEntry: model.isShellInputSecure,
                 placeholder: model.searchFieldPlaceholder,
                 accessibilityLabel: model.searchFieldAccessibilityLabel,
-                requestedCaretUTF16: model.shellCompletionCaretUTF16,
-                caretRequestToken: model.shellCompletionCaretRequestToken,
                 onFocus: { model.noteFocus(.search) },
-                onSelectionChange: {
-                    model.noteShellSelectionChanged(
-                        locationUTF16: $0.location,
-                        lengthUTF16: $0.length
-                    )
-                },
                 onCommand: handle
             )
             .frame(height: 32)
 
-            if model.isShellMode {
-                HStack(spacing: 6) {
-                    Image(systemName: "apple.terminal")
-                        .font(.system(size: 13, weight: .semibold))
-                    Text("Shell")
-                        .font(.system(size: 13, weight: .semibold))
-                }
-                .foregroundStyle(Color.secondary)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 5)
-                .background(Color.primary.opacity(0.07), in: Capsule())
-                .accessibilityIdentifier("header.shellMode")
-            } else if let script = model.selectedScript, !script.arguments.isEmpty {
+            if let script = model.selectedScript, !script.arguments.isEmpty {
                 HStack(spacing: 6) {
                     ForEach(Array(script.arguments.enumerated()), id: \.offset) { index, argument in
                         ArgumentTokenBox(model: model, argument: argument, index: index, onCommand: handle)
@@ -267,6 +270,12 @@ private struct LauncherSearchView: View {
         let resultsStartIndex = runningShellCount + (calculatorIndex == nil ? 0 : 1)
         let showsResultsSection = calculatorIndex == nil || resultsStartIndex < model.results.count
         let isLoadingResults = model.isLoading || model.isFileListingLoading
+        let selectedItemID = model.selectedItem?.id
+        // Result positions change whenever a retained terminal is inserted at
+        // the front. Give SwiftUI the item's stable identity so a recycled
+        // shell-row subtree cannot retain the previous row's selection paint.
+        let runningShellRows = Array(model.results.prefix(runningShellCount).enumerated())
+        let ordinaryRows = Array(model.results.enumerated().dropFirst(resultsStartIndex))
 
         return VStack(spacing: 0) {
             ScrollViewReader { proxy in
@@ -275,8 +284,12 @@ private struct LauncherSearchView: View {
                         if runningShellCount > 0 {
                             sectionHeader("Running Shells", showsProgress: false)
 
-                            ForEach(0..<runningShellCount, id: \.self) { resultIndex in
-                                resultRow(at: resultIndex)
+                            ForEach(runningShellRows, id: \.element.id) { row in
+                                resultRow(
+                                    item: row.element,
+                                    at: row.offset,
+                                    isSelected: selectedItemID == row.element.id
+                                )
                             }
                         }
 
@@ -286,7 +299,7 @@ private struct LauncherSearchView: View {
 
                             CalculatorCard(
                                 calculation: calculation,
-                                isSelected: model.selectedIndex == calculatorIndex,
+                                isSelected: selectedItemID == model.results[calculatorIndex].id,
                                 onSelect: { model.select(index: calculatorIndex) },
                                 onOpen: {
                                     model.select(index: calculatorIndex)
@@ -300,9 +313,13 @@ private struct LauncherSearchView: View {
                             sectionHeader("Results", showsProgress: isLoadingResults)
                         }
 
-                        if resultsStartIndex < model.results.count {
-                            ForEach(resultsStartIndex..<model.results.count, id: \.self) { resultIndex in
-                                resultRow(at: resultIndex)
+                        if !ordinaryRows.isEmpty {
+                            ForEach(ordinaryRows, id: \.element.id) { row in
+                                resultRow(
+                                    item: row.element,
+                                    at: row.offset,
+                                    isSelected: selectedItemID == row.element.id
+                                )
                             }
                         } else if showsResultsSection, !isLoadingResults {
                             HStack(spacing: 8) {
@@ -345,10 +362,10 @@ private struct LauncherSearchView: View {
         }
     }
 
-    private func resultRow(at index: Int) -> some View {
+    private func resultRow(item: LauncherItem, at index: Int, isSelected: Bool) -> some View {
         ResultRow(
-            item: model.results[index],
-            isSelected: index == model.selectedIndex,
+            item: item,
+            isSelected: isSelected,
             onSelect: { model.select(index: index) },
             onOpen: {
                 model.select(index: index)
@@ -356,7 +373,7 @@ private struct LauncherSearchView: View {
             }
         )
         .frame(height: 48)
-        .id(model.results[index].id)
+        .id(item.id)
     }
 
     private func sectionHeader(_ title: String, showsProgress: Bool) -> some View {
@@ -439,132 +456,7 @@ private struct LauncherSearchView: View {
         .background(Color.launcherControlSurface.opacity(0.20))
     }
 
-    private var shellFooter: some View {
-        HStack(spacing: 10) {
-            Button {
-                model.showSettings()
-            } label: {
-                Image(systemName: "command.square.fill")
-                    .font(.system(size: 16, weight: .semibold))
-                    .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(Color.secondary.opacity(0.74))
-                    .frame(width: 26, height: 26)
-            }
-            .buttonStyle(.plain)
-            .help("Launcher Settings")
-            .accessibilityIdentifier("footer.settings")
-
-            if model.canStopShellSession {
-                Button {
-                    model.cancelCurrentRun()
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "stop.fill")
-                            .font(.system(size: 11, weight: .bold))
-                        Text("Stop")
-                            .font(.system(size: 13, weight: .semibold))
-                        KeyCap("⌃C")
-                    }
-                    .foregroundStyle(Color.red)
-                }
-                .buttonStyle(.plain)
-                .help("Interrupt Running Command (Control-C)")
-                .accessibilityIdentifier("shell.stop")
-            }
-
-            if model.canCloseShellSession {
-                Button {
-                    model.closeSelectedShellSession()
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "xmark.circle")
-                            .font(.system(size: 12, weight: .semibold))
-                        Text("Close Shell")
-                            .font(.system(size: 13, weight: .semibold))
-                    }
-                    .foregroundStyle(Color.secondary)
-                }
-                .buttonStyle(.plain)
-                .help("Close this persistent shell session")
-                .accessibilityIdentifier("shell.close")
-                .accessibilityLabel("Close \(model.shellSessionDisplayName)")
-            }
-
-            Spacer()
-
-            if let inputError = model.shellInputError {
-                Text(inputError)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Color.red)
-                    .lineLimit(1)
-                    .help(inputError)
-                    .accessibilityIdentifier("shell.input.error")
-                    .accessibilityLabel("Shell input error: \(inputError)")
-            } else {
-                Text(shellFooterStatus)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Color.secondary)
-                    .accessibilityIdentifier("shell.footer.status")
-                    .accessibilityHidden(true)
-            }
-
-            Rectangle()
-                .fill(Color.launcherSeparator)
-                .frame(width: 1, height: 14)
-
-            Button {
-                model.handleSubmit()
-            } label: {
-                HStack(spacing: 7) {
-                    Text(ShellInputPresentation.primaryActionTitle(for: model.shellInputMode))
-                        .font(.system(size: 13, weight: .semibold))
-                    KeyCap("↩")
-                }
-                .foregroundStyle(Color.primary.opacity(0.92))
-            }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("shell.run")
-            .accessibilityLabel(ShellInputPresentation.primaryActionTitle(for: model.shellInputMode))
-        }
-        .padding(.horizontal, 12)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.launcherControlSurface.opacity(0.20))
-    }
-
-    private var shellFooterStatus: String {
-        if let sessionPhase = model.shellRun?.sessionPhase {
-            switch sessionPhase {
-            case .starting: return "Starting…"
-            case .ready: return "Ready"
-            case .foreground: return "Running…"
-            case .closing: return "Closing…"
-            }
-        }
-        return switch model.displayedRunPhase {
-        case .running: "Running…"
-        case .finished(.success): "Exit 0"
-        case let .finished(.failure(exitCode)): "Exit \(exitCode)"
-        case .finished(.cancelled): "Cancelled"
-        case .finished(.failedToStart): "Failed to start"
-        case nil: "Ready"
-        }
-    }
-
     private func handle(_ command: LauncherKeyCommand) {
-        if let completionAction = ShellCompletionKeyboardAction.resolve(
-            command,
-            isShellMode: model.isShellMode,
-            hasCandidates: !model.shellCompletions.isEmpty
-        ) {
-            switch completionAction {
-            case let .request(backward, cursorUTF16):
-                model.requestShellCompletion(backward: backward, cursorUTF16: cursorUTF16)
-            case let .move(offset): model.moveShellCompletion(by: offset)
-            case .accept: model.acceptShellCompletion()
-            }
-            return
-        }
-
         switch command {
         case .moveDown: model.moveSelection(by: 1)
         case .moveUp: model.moveSelection(by: -1)
@@ -612,113 +504,6 @@ private struct LauncherSearchView: View {
         case .file: "Open File"
         case .directory: item.id == "file.icloud" ? "Open iCloud" : "Open Directory"
         }
-    }
-}
-
-enum ShellInputPresentation {
-    static func primaryActionTitle(for inputMode: ShellInputMode) -> String {
-        switch inputMode {
-        case .idle: "Run Command"
-        case .foreground: "Send Input"
-        }
-    }
-}
-
-enum ShellCompletionKeyboardAction: Equatable {
-    case request(backward: Bool, cursorUTF16: Int?)
-    case move(offset: Int)
-    case accept
-
-    static func resolve(
-        _ command: LauncherKeyCommand,
-        isShellMode: Bool,
-        hasCandidates: Bool
-    ) -> ShellCompletionKeyboardAction? {
-        guard isShellMode else { return nil }
-        switch command {
-        case let .completeShell(backward, cursorUTF16):
-            return hasCandidates
-                ? .move(offset: backward ? -1 : 1)
-                : .request(backward: backward, cursorUTF16: cursorUTF16)
-        case .focusNext:
-            return hasCandidates ? .move(offset: 1) : .request(backward: false, cursorUTF16: nil)
-        case .focusPrevious:
-            return hasCandidates ? .move(offset: -1) : .request(backward: true, cursorUTF16: nil)
-        case .moveDown where hasCandidates:
-            return .move(offset: 1)
-        case .moveUp where hasCandidates:
-            return .move(offset: -1)
-        case .submit where hasCandidates:
-            return .accept
-        default:
-            return nil
-        }
-    }
-}
-
-struct ShellCompletionPalette: View {
-    let candidates: [String]
-    let selectedIndex: Int
-    let onAccept: (Int) -> Void
-
-    var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(spacing: 2) {
-                    ForEach(Array(candidates.enumerated()), id: \.offset) { index, candidate in
-                        Button {
-                            onAccept(index)
-                        } label: {
-                            HStack(spacing: 9) {
-                                Image(systemName: "chevron.right")
-                                    .font(.system(size: 9, weight: .bold))
-                                    .foregroundStyle(index == selectedIndex ? Color.accentColor : Color.secondary)
-                                    .frame(width: 12)
-                                Text(candidate)
-                                    .font(.system(size: 12, weight: .medium, design: .monospaced))
-                                    .foregroundStyle(Color.primary.opacity(0.92))
-                                    .lineLimit(1)
-                                Spacer(minLength: 8)
-                                if index == selectedIndex {
-                                    KeyCap("↩")
-                                }
-                            }
-                            .padding(.horizontal, 10)
-                            .frame(height: 30)
-                            .contentShape(Rectangle())
-                            .background(
-                                index == selectedIndex ? Color.accentColor.opacity(0.13) : Color.clear,
-                                in: RoundedRectangle(cornerRadius: 7, style: .continuous)
-                            )
-                        }
-                        .buttonStyle(.plain)
-                        .id(index)
-                        .accessibilityIdentifier("shell.completion.\(index)")
-                        .accessibilityLabel(candidate)
-                        .accessibilityValue(index == selectedIndex ? "Selected" : "")
-                    }
-                }
-                .padding(5)
-            }
-            .frame(width: 560, height: min(CGFloat(candidates.count * 32 + 10), 202))
-            .onChange(of: selectedIndex) { _, newIndex in
-                guard candidates.indices.contains(newIndex) else { return }
-                proxy.scrollTo(newIndex, anchor: .center)
-            }
-        }
-        .background {
-            VisualEffectView(material: .popover, blendingMode: .withinWindow)
-                .overlay(Color.launcherSurface.opacity(0.72))
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(Color.launcherSeparator.opacity(0.92), lineWidth: 1)
-        }
-        .shadow(color: .black.opacity(0.24), radius: 14, y: 6)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("shell.completions")
-        .accessibilityLabel("Shell completions")
     }
 }
 
@@ -791,6 +576,10 @@ private struct ResultRow: View {
     let isSelected: Bool
     let onSelect: () -> Void
     let onOpen: () -> Void
+    // SwiftUI can synthesize a hover entry when this row is inserted beneath
+    // a stationary cursor. Capture the pointer position at creation so only
+    // actual mouse movement is allowed to replace keyboard selection.
+    @State private var lastPointerLocation = NSEvent.mouseLocation
 
     var body: some View {
         Button(action: onOpen) {
@@ -828,11 +617,17 @@ private struct ResultRow: View {
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 8)
-        .onHover { hovering in
-            if hovering { onSelect() }
+        .onContinuousHover { phase in
+            let pointerLocation = NSEvent.mouseLocation
+            defer { lastPointerLocation = pointerLocation }
+            guard case .active = phase,
+                  pointerLocation != lastPointerLocation else { return }
+            onSelect()
         }
         .accessibilityIdentifier(LauncherResultPresentation.accessibilityIdentifier(for: item))
         .accessibilityLabel(LauncherResultPresentation.accessibilityLabel(for: item))
+        .accessibilityValue(isSelected ? "Selected" : "Not selected")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
 

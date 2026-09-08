@@ -1,135 +1,265 @@
 import AppKit
+import GhosttyTerminal
 import SwiftUI
 
-/// Full-width terminal-style body shown while Shell mode is active. Output is
-/// normalized for display, while foreground programs can receive line-oriented
-/// input through the launcher's persistent search field.
+/// Native Ghostty terminal mode. The search editor is deliberately absent:
+/// keyboard, mouse, IME, selection, scrollback, and PTY resize all belong to
+/// the retained terminal surface.
+@MainActor
 struct ShellConsoleView: View {
     @ObservedObject var model: LauncherModel
+    @ObservedObject var terminalSession: LauncherTerminalSession
+    let displayName: String
+
+    private let chrome = Color(nsColor: LauncherTerminalPalette.chrome)
 
     var body: some View {
         VStack(spacing: 0) {
             header
-                .frame(height: LauncherStyle.paneHeaderHeight)
+                .frame(height: LauncherStyle.headerHeight)
 
-            Divider()
-                .overlay(Color.white.opacity(0.16))
+            separator
 
-            output
+            LauncherTerminalHost(session: terminalSession)
+                .background(Color.black)
+                .padding(.horizontal, LauncherStyle.terminalSideBorderWidth)
+                .background(chrome)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            separator
+
+            footer
+                .frame(height: LauncherStyle.footerHeight)
         }
+        .background(chrome)
         .foregroundStyle(Color.white.opacity(0.92))
-        .background(Color.black.opacity(0.94))
+        .environment(\.colorScheme, .dark)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("shell.console")
-        .onChange(of: statusText) { oldValue, newValue in
-            guard oldValue != newValue else { return }
-            NSAccessibility.post(
-                element: NSApp as Any,
-                notification: .announcementRequested,
-                userInfo: [
-                    .announcement: "Shell status: \(newValue)",
-                    .priority: NSAccessibilityPriorityLevel.low.rawValue,
-                ]
-            )
+        .onDisappear {
+            terminalSession.setVisible(false)
+        }
+        .alert(
+            "Paste into terminal?",
+            isPresented: pasteAlertIsPresented,
+            presenting: terminalSession.pastePrompt
+        ) { _ in
+            Button("Cancel", role: .cancel) {
+                terminalSession.resolvePasteConfirmation(allow: false)
+            }
+            .keyboardShortcut(.defaultAction)
+
+            Button("Paste") {
+                terminalSession.resolvePasteConfirmation(allow: true)
+            }
+        } message: { prompt in
+            Text("Review this paste before sending it to the terminal.\n\n\(prompt.preview)")
         }
     }
 
     private var header: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 10) {
             Image(systemName: "apple.terminal")
-                .font(.system(size: 12, weight: .semibold))
-            Text(model.shellSessionDisplayName)
                 .font(.system(size: 13, weight: .semibold))
-            Text(model.shellWorkingDirectoryDisplay)
-                .font(.system(size: 12, weight: .medium, design: .monospaced))
+
+            Text(displayName)
+                .font(.system(size: 14, weight: .semibold))
+                .accessibilityIdentifier("shell.displayName")
+
+            Text(workingDirectoryDisplay)
+                .font(.system(size: 13, weight: .medium, design: .monospaced))
                 .foregroundStyle(Color.white.opacity(0.48))
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .accessibilityIdentifier("shell.workingDirectory")
-                .accessibilityLabel("Shell working directory")
-                .accessibilityValue(model.shellWorkingDirectoryDisplay)
 
-            Spacer(minLength: 8)
+            Spacer(minLength: 12)
 
-            Text(statusText)
+            statusBadge
+
+            Button {
+                model.showSettings()
+            } label: {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Color.white.opacity(0.62))
+                    .frame(width: 30, height: 30)
+                    .background(Color.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 8))
+            }
+            .buttonStyle(.plain)
+            .help("Launcher Settings")
+            .accessibilityIdentifier("header.settings")
+        }
+        .padding(.horizontal, 17)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(chrome)
+    }
+
+    @ViewBuilder
+    private var statusBadge: some View {
+        switch terminalSession.phase {
+        case .exited, .failed:
+            Button {
+                terminalSession.restart()
+            } label: {
+                Text("Restart")
+                    .font(.system(size: 11, weight: .semibold))
+            }
+            .buttonStyle(.plain)
+            .help(terminalSession.startupError ?? "Restart terminal")
+            .accessibilityIdentifier("shell.status.restart")
+
+        case .idle, .starting, .ready:
+            Text(terminalSession.phase.statusText)
                 .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(statusColor)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 2)
-                .background(Color.white.opacity(0.09), in: Capsule())
-                .accessibilityIdentifier("shell.output.status")
-                .accessibilityLabel("Shell status")
-                .accessibilityValue(statusText)
+                .accessibilityIdentifier("shell.status")
         }
-        .padding(.horizontal, 14)
-        .background(Color.black.opacity(0.18))
     }
 
-    private var output: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(outputText)
-                        .font(.system(size: 12, design: .monospaced))
-                        .foregroundStyle(outputForeground)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .accessibilityIdentifier("shell.output")
-                        // A selectable SwiftUI Text can leave its bridged
-                        // AppKit accessibility value frozen at the string it
-                        // had when the element was created. Publish the live
-                        // transcript explicitly so VoiceOver and UI automation
-                        // receive streamed updates too.
-                        .accessibilityLabel("Shell output")
-                        .accessibilityValue(outputText)
-
-                    Color.clear
-                        .frame(height: 1)
-                        .id("shell.bottom")
+    private var footer: some View {
+        HStack {
+            Button {
+                model.leaveShellMode()
+            } label: {
+                HStack(spacing: 9) {
+                    Text("⌘K")
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                        .padding(.horizontal, 6)
+                        .frame(minHeight: 22)
+                        .background(
+                            Color.white.opacity(0.08),
+                            in: RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        )
+                    Text("Launcher")
+                        .font(.system(size: 12, weight: .semibold))
                 }
-                .padding(14)
+                .foregroundStyle(Color.white.opacity(0.52))
             }
-            .onChange(of: model.shellRun?.output) { _, _ in
-                proxy.scrollTo("shell.bottom", anchor: .bottom)
+            .buttonStyle(.plain)
+            .help("Return to Launcher (Command-K)")
+            .accessibilityIdentifier("shell.returnToLauncher")
+
+            Spacer()
+        }
+        .padding(.horizontal, 17)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(chrome)
+    }
+
+    private var separator: some View {
+        Rectangle()
+            .fill(Color.white.opacity(0.12))
+            .frame(height: 1)
+    }
+
+    private var pasteAlertIsPresented: Binding<Bool> {
+        Binding(
+            get: { terminalSession.pastePrompt != nil },
+            set: { isPresented in
+                if !isPresented {
+                    terminalSession.resolvePasteConfirmation(allow: false)
+                }
             }
-            .onAppear {
-                proxy.scrollTo("shell.bottom", anchor: .bottom)
-            }
+        )
+    }
+
+    private var workingDirectoryDisplay: String {
+        let directory = terminalSession.workingDirectory
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        if directory == home { return "~" }
+        if directory.hasPrefix(home + "/") {
+            return "~" + directory.dropFirst(home.count)
+        }
+        return directory
+    }
+}
+
+private enum LauncherTerminalPalette {
+    static let chrome = NSColor(
+        srgbRed: 0.135,
+        green: 0.135,
+        blue: 0.145,
+        alpha: 1
+    )
+}
+
+/// Mounts a stable AppKit terminal view without transferring ownership of its
+/// surface or PTY to SwiftUI's conditional view hierarchy.
+@MainActor
+private struct LauncherTerminalHost: NSViewRepresentable {
+    let session: LauncherTerminalSession
+
+    final class Coordinator {
+        let session: LauncherTerminalSession
+
+        init(session: LauncherTerminalSession) {
+            self.session = session
         }
     }
 
-    private var outputText: String {
-        guard let run = model.shellRun else {
-            if model.scriptRun?.phase == .running {
-                return "Another process is running. Stop it before running a shell command."
-            }
-            return "Type a command above and press Return."
-        }
-        return run.output.isEmpty ? "Waiting for output…" : run.output
+    func makeCoordinator() -> Coordinator {
+        Coordinator(session: session)
     }
 
-    private var outputForeground: Color {
-        model.shellRun == nil ? Color.white.opacity(0.48) : Color.white.opacity(0.92)
+    func makeNSView(context _: Context) -> LauncherTerminalContainer {
+        let container = LauncherTerminalContainer(terminal: session.makeTerminalView())
+        session.setVisible(true)
+        DispatchQueue.main.async {
+            _ = session.focus()
+        }
+        return container
     }
 
-    private var statusText: String {
-        guard let phase = model.displayedRunPhase else { return "Ready" }
-        return switch phase {
-        case .running: "Running…"
-        case .finished(.success): "Exit 0"
-        case let .finished(.failure(exitCode)): "Exit \(exitCode)"
-        case .finished(.cancelled): "Cancelled"
-        case .finished(.failedToStart): "Failed to start"
+    func updateNSView(_ nsView: LauncherTerminalContainer, context _: Context) {
+        nsView.needsLayout = true
+    }
+
+    static func dismantleNSView(
+        _ nsView: LauncherTerminalContainer,
+        coordinator: Coordinator
+    ) {
+        // SwiftUI may build the replacement host before dismantling this one.
+        // Only the container that still owns the retained terminal may mark
+        // the surface hidden; a stale container must not hide a fresh mount.
+        if nsView.detachTerminal() {
+            coordinator.session.setVisible(false)
+        }
+    }
+}
+
+@MainActor
+private final class LauncherTerminalContainer: NSView {
+    private let terminal: TerminalView
+
+    init(terminal: TerminalView) {
+        self.terminal = terminal
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.black.cgColor
+        terminal.removeFromSuperview()
+        addSubview(terminal)
+    }
+
+    @available(*, unavailable)
+    required init?(coder _: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func layout() {
+        super.layout()
+        guard bounds.width > 0, bounds.height > 0 else { return }
+        if terminal.frame.size != bounds.size {
+            terminal.setFrameSize(bounds.size)
+        }
+        if terminal.frame.origin != .zero {
+            terminal.setFrameOrigin(.zero)
         }
     }
 
-    private var statusColor: Color {
-        switch model.displayedRunPhase {
-        case .finished(.success): .green
-        case .finished(.failure), .finished(.failedToStart): .red
-        case .finished(.cancelled): Color.white.opacity(0.55)
-        case .running, nil: Color.white.opacity(0.72)
-        }
+    @discardableResult
+    func detachTerminal() -> Bool {
+        guard terminal.superview === self else { return false }
+        terminal.removeFromSuperview()
+        return true
     }
 }

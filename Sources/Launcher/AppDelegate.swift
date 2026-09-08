@@ -1,11 +1,13 @@
 import AppKit
 import Carbon
+import Combine
 import QuickLookUI
 import SwiftUI
 
 final class LauncherPanel: NSPanel {
     var onCancel: (() -> Void)?
     var onInterrupt: (() -> Bool)?
+    var onReturnToLauncher: (() -> Bool)?
     weak var quickLook: QuickLookController?
 
     override var canBecomeKey: Bool { true }
@@ -19,6 +21,12 @@ final class LauncherPanel: NSPanel {
         let meaningfulModifiers = event.modifierFlags
             .intersection(.deviceIndependentFlagsMask)
             .subtracting([.capsLock, .function])
+        if event.type == .keyDown,
+           meaningfulModifiers == .command,
+           event.charactersIgnoringModifiers?.lowercased() == "k",
+           onReturnToLauncher?() == true {
+            return true
+        }
         if event.type == .keyDown,
            meaningfulModifiers == .control,
            event.charactersIgnoringModifiers?.lowercased() == "c" {
@@ -94,21 +102,32 @@ enum LauncherWindowLifecycle {
     }
 }
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let settings = LauncherSettings()
     private let isUITesting = ProcessInfo.processInfo.arguments.contains("--ui-testing")
-    private lazy var model = LauncherModel(settings: settings, isUITesting: isUITesting)
+    private lazy var terminalStore = LauncherTerminalStore()
+    private lazy var model = LauncherModel(
+        settings: settings,
+        isUITesting: isUITesting,
+        usesNativeTerminalSessions: true
+    )
     private lazy var hotKeyManager = HotKeyManager { [weak self] in
         self?.toggleLauncher()
     }
 
     private var panel: LauncherPanel?
     private var statusItem: NSStatusItem?
+    private var terminalStoreObservation: AnyCancellable?
     private let quickLookController = QuickLookController()
     /// Where the panel sat before the output pane pushed it off a screen edge.
     private var compactFrameOrigin: NSPoint?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Ghostty inherits Launcher's process environment. Remove presentation
+        // policy from the launching host before prewarming the user's shell or
+        // creating any terminal surface.
+        LauncherTerminalConfiguration.sanitizeProcessEnvironment()
         NSApp.setActivationPolicy(isUITesting ? .regular : .accessory)
         // Capture the login shell's environment now: scripts need it, and
         // paying for a cold shell startup here costs nothing visible, whereas
@@ -129,6 +148,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        terminalStore.terminateAll()
         model.terminateRunningProcess()
     }
 
@@ -164,6 +184,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self?.setOutputPanePresented(isPresented)
         }
         model.onQuickLook = { [weak self] url in self?.quickLookController.toggle(url) }
+        model.onCreateNativeTerminalSession = { [weak self] launchInput in
+            dispatchPrecondition(condition: .onQueue(.main))
+            guard let self else { return nil }
+            let summary = self.terminalStore.createSession()
+            if !launchInput.isEmpty {
+                self.terminalStore.session(for: summary.id)?.queueInput(launchInput)
+            }
+            return summary
+        }
+        model.onSelectNativeTerminalSession = { [weak self] id in
+            dispatchPrecondition(condition: .onQueue(.main))
+            return self?.terminalStore.selectSession(id) ?? false
+        }
+        model.onDeselectNativeTerminalSession = { [weak self] in
+            dispatchPrecondition(condition: .onQueue(.main))
+            self?.terminalStore.clearSelection()
+        }
+        model.onCloseNativeTerminalSession = { [weak self] id in
+            dispatchPrecondition(condition: .onQueue(.main))
+            return self?.terminalStore.closeSession(id) ?? false
+        }
+        model.onSendNativeTerminalInput = { [weak self] id, input in
+            dispatchPrecondition(condition: .onQueue(.main))
+            guard let session = self?.terminalStore.session(for: id) else { return false }
+            session.queueInput(input)
+            return true
+        }
+        terminalStoreObservation = terminalStore.$summaries.sink { [weak self] summaries in
+            dispatchPrecondition(condition: .onQueue(.main))
+            self?.model.updateNativeTerminalSessions(summaries)
+        }
         model.onHotKeyChange = { [weak self] newHotKey in
             guard let self else { return false }
             if self.isUITesting { return true }
@@ -191,8 +242,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             defer: false
         )
         panel.onInterrupt = { [weak self] in
-            guard let self, self.model.hasRunningProcess else { return false }
+            guard let self,
+                  !self.model.isShellMode,
+                  self.model.hasRunningProcess else { return false }
             self.model.cancelCurrentRun()
+            return true
+        }
+        panel.onReturnToLauncher = { [weak self] in
+            guard let self,
+                  self.model.screen == .search,
+                  self.model.isShellMode else { return false }
+            self.model.leaveShellMode()
             return true
         }
         panel.title = "Launcher"
@@ -208,10 +268,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if ProcessInfo.processInfo.arguments.contains("--ui-testing-dark") {
             panel.appearance = NSAppearance(named: .darkAqua)
         }
-        panel.onCancel = { [weak model] in model?.handleEscape() }
+        panel.onCancel = { [weak model] in
+            guard model?.screen != .search || model?.isShellMode != true else { return }
+            model?.handleEscape()
+        }
         panel.quickLook = quickLookController
 
-        let rootView = LauncherRootView(model: model)
+        let rootView = LauncherRootView(
+            model: model,
+            terminalStore: terminalStore
+        )
         let hostingView = NSHostingView(rootView: rootView)
         hostingView.frame = panel.contentView?.bounds ?? NSRect(
             x: 0,
@@ -264,11 +330,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
         panel.orderFrontRegardless()
+        if screen == .search, model.isShellMode {
+            terminalStore.selectedSession?.setVisible(true)
+            DispatchQueue.main.async { [weak self] in
+                _ = self?.terminalStore.selectedSession?.focus()
+            }
+        }
     }
 
     private func hideLauncher() {
         // Order out first so ending Quick Look control cannot re-key the launcher.
         panel?.orderOut(nil)
+        terminalStore.selectedSession?.setVisible(false)
         quickLookController.dismiss()
         model.prepareForDismissal()
         model.dismissOutputPane()
@@ -305,10 +378,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             context.allowsImplicitAnimation = true
             panel.animator().setFrame(targetFrame, display: true)
         } completionHandler: { [weak self, weak panel] in
-            guard let self, let panel,
-                  !self.model.isPanelExpanded,
-                  panel.frame.width == LauncherStyle.panelWidth else { return }
-            self.compactFrameOrigin = nil
+            Task { @MainActor in
+                guard let self, let panel,
+                      !self.model.isPanelExpanded,
+                      panel.frame.width == LauncherStyle.panelWidth else { return }
+                self.compactFrameOrigin = nil
+            }
         }
     }
 

@@ -14,6 +14,11 @@ settings:
     ENABLE_HARDENED_RUNTIME: NO
     CLANG_ENABLE_MODULES: YES
 
+packages:
+  LibGhosttySPM:
+    url: https://github.com/stevemurr/libghostty-spm
+    revision: ca4cffd668f958e1fe5da9cbf31f460f3ba01533
+
 targets:
   Launcher:
     type: application
@@ -34,6 +39,9 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.stevemurr.Launcher
         PRODUCT_NAME: Launcher
         SWIFT_EMIT_LOC_STRINGS: NO
+    dependencies:
+      - package: LibGhosttySPM
+        product: GhosttyTerminal
 
   LauncherTests:
     type: bundle.unit-test

@@ -11,6 +11,7 @@ final class LauncherLayoutTests: XCTestCase {
         XCTAssertEqual(LauncherStyle.panelHeight, 512)
         XCTAssertEqual(LauncherStyle.drawerResultsWidth, 526)
         XCTAssertEqual(LauncherStyle.outputPaneWidth, 464)
+        XCTAssertEqual(LauncherStyle.terminalSideBorderWidth, 3)
     }
 
     /// With the pane open the window is exactly the two regions side by side.
@@ -27,41 +28,33 @@ final class LauncherLayoutTests: XCTestCase {
     func testShellModeUsesTheExpandedPanelWidthBeforeACommandRuns() {
         let suite = "LauncherLayoutTests-Shell-\(UUID().uuidString)"
         let settings = LauncherSettings(defaults: UserDefaults(suiteName: suite)!)
-        let model = LauncherModel(settings: settings, isUITesting: true)
+        let terminalStore = LauncherTerminalStore()
+        let model = LauncherModel(
+            settings: settings,
+            isUITesting: true,
+            usesNativeTerminalSessions: true
+        )
+        model.onCreateNativeTerminalSession = { launchInput in
+            let summary = terminalStore.createSession()
+            if !launchInput.isEmpty {
+                terminalStore.session(for: summary.id)?.queueInput(launchInput)
+            }
+            return summary
+        }
+        model.onSelectNativeTerminalSession = { terminalStore.selectSession($0) }
+        model.onCloseNativeTerminalSession = { terminalStore.closeSession($0) }
         model.query = ">"
         XCTAssertTrue(model.isShellMode)
         XCTAssertEqual(model.query, "", "the trigger is not visible shell input")
 
-        let hosting = NSHostingView(rootView: LauncherRootView(model: model))
+        let hosting = NSHostingView(
+            rootView: LauncherRootView(model: model, terminalStore: terminalStore)
+        )
         hosting.layoutSubtreeIfNeeded()
 
         XCTAssertEqual(hosting.fittingSize.width, LauncherStyle.expandedPanelWidth)
         XCTAssertEqual(hosting.fittingSize.height, LauncherStyle.panelHeight)
-    }
-
-    @MainActor
-    func testShellCompletionPaletteStaysCompactAndCapsItsVisibleRows() {
-        let shortPalette = NSHostingView(
-            rootView: ShellCompletionPalette(
-                candidates: ["git checkout", "git cherry-pick"],
-                selectedIndex: 0,
-                onAccept: { _ in }
-            )
-        )
-        let longPalette = NSHostingView(
-            rootView: ShellCompletionPalette(
-                candidates: (0..<20).map { "candidate-\($0)" },
-                selectedIndex: 12,
-                onAccept: { _ in }
-            )
-        )
-        shortPalette.layoutSubtreeIfNeeded()
-        longPalette.layoutSubtreeIfNeeded()
-
-        XCTAssertEqual(shortPalette.fittingSize.width, 560)
-        XCTAssertEqual(shortPalette.fittingSize.height, 74)
-        XCTAssertEqual(longPalette.fittingSize.width, 560)
-        XCTAssertEqual(longPalette.fittingSize.height, 202)
+        terminalStore.terminateAll()
     }
 
     /// The results region shrinks as the window grows, so the pane costs the

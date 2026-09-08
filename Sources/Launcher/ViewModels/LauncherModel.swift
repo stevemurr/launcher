@@ -294,9 +294,17 @@ final class LauncherModel: ObservableObject {
                     isConsumingShellTrigger = true
                     query.removeFirst()
                     isConsumingShellTrigger = false
+                    if usesNativeTerminalSessions {
+                        forwardNativeTerminalInput(query)
+                        return
+                    }
                     refreshResults(resetSelection: true)
                     return
                 }
+            }
+            if isShellMode, usesNativeTerminalSessions {
+                forwardNativeTerminalInput(query)
+                return
             }
             if isActionsPresented {
                 isActionsPresented = false
@@ -344,6 +352,7 @@ final class LauncherModel: ObservableObject {
     @Published private(set) var scriptRun: ScriptRunState?
     @Published private(set) var isShellMode = false
     @Published private(set) var shellSessions: [ShellRunState] = []
+    @Published private(set) var nativeTerminalSessions: [LauncherTerminalSummary] = []
     @Published private(set) var selectedShellSessionID: ShellSessionID?
     @Published private(set) var shellCompletions: [String] = []
     @Published private(set) var shellCompletionSelectionIndex = 0
@@ -373,6 +382,11 @@ final class LauncherModel: ObservableObject {
     var onOutputPanePresentationChange: ((Bool) -> Void)?
     var onHotKeyChange: ((HotKey) -> Bool)?
     var onQuickLook: ((URL) -> Void)?
+    var onCreateNativeTerminalSession: ((String) -> LauncherTerminalSummary?)?
+    var onSelectNativeTerminalSession: ((ShellSessionID) -> Bool)?
+    var onDeselectNativeTerminalSession: (() -> Void)?
+    var onCloseNativeTerminalSession: ((ShellSessionID) -> Bool)?
+    var onSendNativeTerminalInput: ((ShellSessionID, String) -> Bool)?
     var applicationFinder: (URL) -> [URL] = { url in
         NSWorkspace.shared.urlsForApplications(toOpen: url)
     }
@@ -394,6 +408,7 @@ final class LauncherModel: ObservableObject {
     private let loginItems: LoginItemService
     private let scriptRunner: ScriptRunning
     private let shellSessionManager: PersistentShellSessionManaging
+    private let usesNativeTerminalSessions: Bool
     private let scriptsDirectoryOverride: URL?
     private let browseHomeOverride: URL?
     private let fileListingResolver: (FileBrowserSession?, String, URL) -> FileListing?
@@ -447,6 +462,7 @@ final class LauncherModel: ObservableObject {
         shellRunner: ShellCommandRunning? = nil,
         shellJobManager: ShellJobManaging? = nil,
         shellSessionManager: PersistentShellSessionManaging? = nil,
+        usesNativeTerminalSessions: Bool = false,
         browseHome: URL? = nil,
         resolvesFileListingsSynchronously: Bool? = nil,
         fileListingResolver: ((FileBrowserSession?, String, URL) -> FileListing?)? = nil,
@@ -457,6 +473,7 @@ final class LauncherModel: ObservableObject {
         self.isUITesting = isUITesting
         self.loginItems = loginItems ?? (isUITesting ? InMemoryLoginItemService() : AppLoginItemService())
         self.scriptRunner = scriptRunner ?? defaultProcessRunner
+        self.usesNativeTerminalSessions = usesNativeTerminalSessions
         if let shellSessionManager {
             self.shellSessionManager = shellSessionManager
         } else if let shellJobManager {
@@ -544,9 +561,15 @@ final class LauncherModel: ObservableObject {
         case .scriptCommand: return [.open, .editScript, .showInFinder, .copyScriptContents, .deleteScript]
         case .file, .directory: return [.open, .openWith, .showInFinder, .quickLook, .copyPath]
         case .runningShell:
-            guard case let .shellSession(id) = item.destination,
-                  shellSessions.contains(where: { $0.id == id && $0.sessionPhase == .ready })
-            else { return [.open] }
+            guard case let .shellSession(id) = item.destination else { return [.open] }
+            if usesNativeTerminalSessions {
+                return nativeTerminalSessions.contains(where: { $0.id == id })
+                    ? [.open, .closeShell]
+                    : [.open]
+            }
+            guard shellSessions.contains(where: { $0.id == id && $0.sessionPhase == .ready }) else {
+                return [.open]
+            }
             return [.open, .closeShell]
         default: return [.open]
         }
@@ -671,6 +694,8 @@ final class LauncherModel: ObservableObject {
     }
 
     func prepareForPresentation(screen: LauncherScreen = .search) {
+        let preservesNativeTerminal = usesNativeTerminalSessions && isShellMode
+        let resumesNativeTerminal = screen == .search && preservesNativeTerminal
         self.screen = screen
         isActionsPresented = false
         actionsSelectionIndex = 0
@@ -680,10 +705,10 @@ final class LauncherModel: ObservableObject {
         pendingRun = nil
         pendingDeletion = nil
         editingScriptURL = nil
-        setPanelPresentation(.compact)
+        setPanelPresentation(resumesNativeTerminal ? .shellConsole : .compact)
         focusTarget = .search
         browseSession = nil
-        if isShellMode {
+        if isShellMode, !usesNativeTerminalSessions {
             discardSelectedShellIfFinished()
             isShellMode = false
             selectedShellSessionID = nil
@@ -695,7 +720,16 @@ final class LauncherModel: ObservableObject {
         // dismissed with an empty query would otherwise reopen still showing
         // the last run's chip.
         clearFinishedRuns()
-        if query.isEmpty {
+        if preservesNativeTerminal {
+            if !query.isEmpty {
+                isConsumingShellTrigger = true
+                query = ""
+                isConsumingShellTrigger = false
+            }
+            if resumesNativeTerminal {
+                refreshResults(resetSelection: true)
+            }
+        } else if query.isEmpty {
             // query.didSet is guarded against no-op assignments. Refreshing
             // here is essential when Launcher was hidden from sticky browse
             // mode with an already-empty query; otherwise Settings can reopen
@@ -705,7 +739,7 @@ final class LauncherModel: ObservableObject {
             query = ""
         }
         selectedIndex = 0
-        if screen == .search {
+        if screen == .search, !resumesNativeTerminal {
             focusToken += 1
         }
     }
@@ -1331,6 +1365,19 @@ final class LauncherModel: ObservableObject {
     /// Shell mode immediately; a background row disappears as soon as its
     /// close begins and the final service callback removes its retained state.
     func closeShellSession(id: ShellSessionID) {
+        if usesNativeTerminalSessions {
+            guard nativeTerminalSessions.contains(where: { $0.id == id }) else { return }
+            guard onCloseNativeTerminalSession?(id) == true else {
+                refreshBackgroundShellResultsIfVisible()
+                return
+            }
+            // The store publishes the authoritative post-close snapshot.
+            // That snapshot also exits an actively displayed session after
+            // removal. Do not clear selection before close succeeds or a
+            // rejected close would hide a still-live terminal.
+            return
+        }
+
         guard let index = shellSessions.firstIndex(where: { $0.id == id }),
               shellSessions[index].sessionPhase == .ready else { return }
 
@@ -1473,7 +1520,28 @@ final class LauncherModel: ObservableObject {
         pendingRun = nil
         pendingDeletion = nil
         isRunPalettePresented = false
-        selectedShellSessionID = nil
+        if usesNativeTerminalSessions {
+            guard let summary = onCreateNativeTerminalSession?(draft) else {
+                // Native mode is only valid when its main-actor store accepts
+                // creation. Stay in the ordinary launcher if that ownership
+                // seam is unavailable instead of presenting a shell with no
+                // retained surface behind it.
+                isAwaitingShellSeparator = false
+                isConsumingShellTrigger = true
+                query = ""
+                isConsumingShellTrigger = false
+                refreshResults(resetSelection: true)
+                return
+            }
+            if let index = nativeTerminalSessions.firstIndex(where: { $0.id == summary.id }) {
+                nativeTerminalSessions[index] = summary
+            } else {
+                nativeTerminalSessions.append(summary)
+            }
+            selectedShellSessionID = summary.id
+        } else {
+            selectedShellSessionID = nil
+        }
         dismissShellCompletion()
         shellInputError = nil
         isShellMode = true
@@ -1484,20 +1552,53 @@ final class LauncherModel: ObservableObject {
         resetShellHistoryNavigation()
 
         isConsumingShellTrigger = true
-        query = draft
+        query = usesNativeTerminalSessions ? "" : draft
         isConsumingShellTrigger = false
 
         refreshResults(resetSelection: true)
         clearFinishedScriptRun()
     }
 
+    /// AppKit may finish delivering characters to the outgoing launcher
+    /// editor after `>` has switched the view hierarchy. Forward that tail
+    /// directly to the retained session so delivery never depends on a
+    /// SwiftUI mount callback.
+    private func forwardNativeTerminalInput(_ input: String) {
+        guard !input.isEmpty else { return }
+        guard let id = selectedShellSessionID,
+              onSendNativeTerminalInput?(id, input) == true else {
+            // The outgoing AppKit editor has nowhere visible to retain this
+            // tail once native mode is mounted. Return it to ordinary search
+            // on delivery failure so user input is never silently discarded.
+            exitShellMode()
+            isConsumingShellTrigger = true
+            query = input
+            isConsumingShellTrigger = false
+            refreshResults(resetSelection: true)
+            focusSearch()
+            return
+        }
+        isConsumingShellTrigger = true
+        query = ""
+        isConsumingShellTrigger = false
+    }
+
+    /// Returns keyboard ownership to the ordinary launcher. Terminal Escape
+    /// is never used for this because full-screen programs own that key.
+    func leaveShellMode() {
+        exitShellMode()
+        focusSearch()
+    }
+
     private func exitShellMode() {
         guard isShellMode else { return }
         discardSelectedShellIfFinished()
-        // A live job remains in `shellSessions` and is discoverable through the
-        // Running Shells section, but it is no longer the displayed run once its
-        // console closes. This keeps global run/output shortcuts from binding to
-        // a hidden shell; selecting its result establishes the selection again.
+        if usesNativeTerminalSessions {
+            onDeselectNativeTerminalSession?()
+        }
+        // The retained session remains discoverable through Running Shells,
+        // but is no longer the displayed terminal. Selecting its result binds
+        // the exact same native view and PTY again.
         selectedShellSessionID = nil
         dismissShellCompletion()
         shellInputError = nil
@@ -1516,9 +1617,17 @@ final class LauncherModel: ObservableObject {
     }
 
     func resumeShellSession(id: ShellSessionID) {
-        guard shellSessions.contains(where: { $0.id == id && $0.sessionPhase != .closing }) else {
-            refreshResults(resetSelection: true)
-            return
+        if usesNativeTerminalSessions {
+            guard nativeTerminalSessions.contains(where: { $0.id == id }),
+                  onSelectNativeTerminalSession?(id) == true else {
+                refreshResults(resetSelection: true)
+                return
+            }
+        } else {
+            guard shellSessions.contains(where: { $0.id == id && $0.sessionPhase != .closing }) else {
+                refreshResults(resetSelection: true)
+                return
+            }
         }
 
         isActionsPresented = false
@@ -1543,6 +1652,9 @@ final class LauncherModel: ObservableObject {
     }
 
     private func submitShellCommand() {
+        // Ghostty owns Return and arbitrary terminal input in production.
+        // This remains the injected legacy-manager path used by older tests.
+        guard !usesNativeTerminalSessions else { return }
         let input = shellCommandDraft
 
         if shellInputMode == .foreground {
@@ -1813,6 +1925,21 @@ final class LauncherModel: ObservableObject {
     /// `results` contains value snapshots rather than bindings into
     /// `shellSessions`. Keep a background row's Ready/Running label current as
     /// lifecycle events arrive, without restarting an unrelated file browse.
+    func updateNativeTerminalSessions(_ summaries: [LauncherTerminalSummary]) {
+        guard usesNativeTerminalSessions else { return }
+        let selectedSessionWasRemoved = isShellMode
+            && selectedShellSessionID.map { selectedID in
+                !summaries.contains(where: { $0.id == selectedID })
+            } == true
+        nativeTerminalSessions = summaries
+        if selectedSessionWasRemoved {
+            exitShellMode()
+            focusSearch()
+            return
+        }
+        refreshBackgroundShellResultsIfVisible()
+    }
+
     private func refreshBackgroundShellResultsIfVisible() {
         guard !isShellMode,
               browseSession == nil,
@@ -1834,6 +1961,7 @@ final class LauncherModel: ObservableObject {
     }
 
     func requestShellCompletion(backward: Bool = false, cursorUTF16: Int? = nil) {
+        guard !usesNativeTerminalSessions else { return }
         guard isShellMode, shellInputMode == .idle else {
             dismissShellCompletion()
             return
@@ -2226,24 +2354,47 @@ final class LauncherModel: ObservableObject {
         if panelPresentation == .shellConsole {
             setPanelPresentation(.compact)
         }
-        let runningShellItems = shellSessions.reversed().compactMap { run -> LauncherItem? in
-            guard run.sessionPhase != .closing else { return nil }
-            let stateDescription: String
-            switch run.sessionPhase {
-            case .starting: stateDescription = "Starting in \(displayShellDirectory(run.workingDirectory))"
-            case .ready: stateDescription = "Ready in \(displayShellDirectory(run.workingDirectory))"
-            case .foreground: stateDescription = "Running in \(displayShellDirectory(run.workingDirectory))"
-            case .closing: return nil
+        let runningShellItems: [LauncherItem]
+        if usesNativeTerminalSessions {
+            runningShellItems = nativeTerminalSessions.reversed().map { summary in
+                let status: String
+                switch summary.phase {
+                case .idle, .starting: status = "Starting"
+                case .ready: status = "Ready"
+                case .exited: status = "Exited"
+                case .failed: status = "Unavailable"
+                }
+                let stateDescription = "\(status) in \(displayShellDirectory(summary.workingDirectory))"
+                return LauncherItem(
+                    id: "shell.\(summary.id.rawValue.uuidString)",
+                    title: summary.displayName,
+                    subtitle: stateDescription,
+                    kind: .runningShell,
+                    destination: .shellSession(summary.id),
+                    keywords: "\(summary.displayName) running shell terminal session \(stateDescription)",
+                    detail: status
+                )
             }
-            return LauncherItem(
-                id: "shell.\(run.id.rawValue.uuidString)",
-                title: run.displayName,
-                subtitle: stateDescription,
-                kind: .runningShell,
-                destination: .shellSession(run.id),
-                keywords: "\(run.displayName) running shell terminal session \(stateDescription)",
-                detail: run.sessionPhase == .foreground ? "Running" : "Ready"
-            )
+        } else {
+            runningShellItems = shellSessions.reversed().compactMap { run -> LauncherItem? in
+                guard run.sessionPhase != .closing else { return nil }
+                let stateDescription: String
+                switch run.sessionPhase {
+                case .starting: stateDescription = "Starting in \(displayShellDirectory(run.workingDirectory))"
+                case .ready: stateDescription = "Ready in \(displayShellDirectory(run.workingDirectory))"
+                case .foreground: stateDescription = "Running in \(displayShellDirectory(run.workingDirectory))"
+                case .closing: return nil
+                }
+                return LauncherItem(
+                    id: "shell.\(run.id.rawValue.uuidString)",
+                    title: run.displayName,
+                    subtitle: stateDescription,
+                    kind: .runningShell,
+                    destination: .shellSession(run.id),
+                    keywords: "\(run.displayName) running shell terminal session \(stateDescription)",
+                    detail: run.sessionPhase == .foreground ? "Running" : "Ready"
+                )
+            }
         }
         let allItems = [launcherSettingsItem, createScriptItem]
             + applications + scripts + ApplicationCatalog.systemSettings

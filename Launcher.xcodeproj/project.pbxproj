@@ -13,6 +13,7 @@
 		0FA7134809B8DCC46E2E6780 /* LauncherModelShellTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66D1D64C404FAF1C9CEAFF39 /* LauncherModelShellTests.swift */; };
 		1085E97C3F3E3DCDA467D6EC /* LauncherViewCommandTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9559737EBF91FC010116325 /* LauncherViewCommandTests.swift */; };
 		186A63C2A6DA9494480A3961 /* QuickLookController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D368412C1CCFBA40D8AFCC0 /* QuickLookController.swift */; };
+		203FABE2494933F2CBE14A20 /* GhosttyTerminal in Frameworks */ = {isa = PBXBuildFile; productRef = 8273FA4052FBF00930A8CC45 /* GhosttyTerminal */; };
 		22ED689DD4A63D715867FA8D /* LauncherModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 959701A99FA58E1D01A1DE54 /* LauncherModel.swift */; };
 		24C3A77AA0CE567ED036B3AB /* ScriptTemplateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DDD9C9CA91E8C5CB6FC2B07 /* ScriptTemplateTests.swift */; };
 		2ECACD85B0177072B7F4FF3F /* LauncherView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78CA243E2DE30FA30AD048FA /* LauncherView.swift */; };
@@ -26,6 +27,7 @@
 		60AF4B837F63C81F926E0207 /* ShellEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33777B688F8CE0A80790584C /* ShellEnvironment.swift */; };
 		681691F840D52E4C3A79EF75 /* LauncherLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D27CEDA49CE3104F1F77F73 /* LauncherLayoutTests.swift */; };
 		73560774F41DD6C0BDCB0D1B /* ProcessShellCommandRunnerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 92CE286B11E39B57AFFC39E9 /* ProcessShellCommandRunnerTests.swift */; };
+		758DD398F96E71205405555C /* LauncherTerminalSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = FFDD27198EFFF2B1BFA84501 /* LauncherTerminalSession.swift */; };
 		75F8E56DA989546E654E02AC /* TerminalOutputSanitizerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1215F93F222A67A7313D27E5 /* TerminalOutputSanitizerTests.swift */; };
 		76F7B695F92592DF8586D322 /* ScriptTemplate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 360EE4294641E5CDD2AACB69 /* ScriptTemplate.swift */; };
 		772B11A6AF85380BA6359DF1 /* ProcessPersistentShellSessionManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6BAC37AB99FEF5CF4386243 /* ProcessPersistentShellSessionManagerTests.swift */; };
@@ -37,6 +39,7 @@
 		9912A5A3418DD7276FEB6ACB /* ShellJobManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = C701DC2120FD365171A0C511 /* ShellJobManager.swift */; };
 		99E3D069AC677C7055589DCD /* ProcessScriptRunnerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88B060740AADCCDCDAC4283A /* ProcessScriptRunnerTests.swift */; };
 		A0D3DC0113EC2E5A8833DFEC /* ScriptCommandViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = EAE88098541CEEB0A11C5D65 /* ScriptCommandViews.swift */; };
+		A255CCD50AF01B3591AB28C9 /* LauncherTerminalSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0EB1F641AFD8C621AB4FBEF4 /* LauncherTerminalSessionTests.swift */; };
 		A3E3543C17D485954CE5BB72 /* LauncherApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66D6E805E68A65282B70E574 /* LauncherApp.swift */; };
 		A3F2F7E5CD14A7BF2EBDF9F4 /* AppIcon.icns in Resources */ = {isa = PBXBuildFile; fileRef = 187433F6A367F18FCC448DDC /* AppIcon.icns */; };
 		A444BCC42154ECB459D1C83E /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = F98B7D65473A4DC5FBCD2992 /* AppDelegate.swift */; };
@@ -54,8 +57,10 @@
 		C94BDA6C44E9909C1F4E85BB /* ShellConsoleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16F64CE22D411B4C25FB2949 /* ShellConsoleView.swift */; };
 		CD6BBEEAD9F0A050F7117668 /* FileBrowserEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 456F09D2CE2629861AA3F501 /* FileBrowserEngine.swift */; };
 		D25355B6291F652BB5845034 /* ScriptCommand.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2FA8646C1767994E168BA1B8 /* ScriptCommand.swift */; };
+		D4FFE211A781EA426AD9773B /* LauncherTerminalStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 005AC84363819216F195424B /* LauncherTerminalStore.swift */; };
 		D5F89921200598D3909B05B8 /* HotKeyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22FC720CE493F39081F98814 /* HotKeyTests.swift */; };
 		E235CF759EFD12CED862899A /* ApplicationCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1E6B80D5E0B5333313B4C27 /* ApplicationCatalog.swift */; };
+		ECA5BF10500433084F1CD2F9 /* LauncherTerminalStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20A5D76080789864AFBB214 /* LauncherTerminalStoreTests.swift */; };
 		ECC4C2C41A5D0867547360C4 /* CalculatorEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD2385441792714C3385DD28 /* CalculatorEngineTests.swift */; };
 		F00697F53BA583B20761C231 /* LauncherModelFileBrowserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C8179AFAF0BE5421D6414F9 /* LauncherModelFileBrowserTests.swift */; };
 		F249BBE16A79E212139415AA /* ScriptCommandCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7BF84A9578FE25A2E5ECECF /* ScriptCommandCatalog.swift */; };
@@ -82,7 +87,9 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		005AC84363819216F195424B /* LauncherTerminalStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherTerminalStore.swift; sourceTree = "<group>"; };
 		0D88C5541841B20155352CEB /* PersistentShellSessionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersistentShellSessionManager.swift; sourceTree = "<group>"; };
+		0EB1F641AFD8C621AB4FBEF4 /* LauncherTerminalSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherTerminalSessionTests.swift; sourceTree = "<group>"; };
 		1215F93F222A67A7313D27E5 /* TerminalOutputSanitizerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalOutputSanitizerTests.swift; sourceTree = "<group>"; };
 		16F64CE22D411B4C25FB2949 /* ShellConsoleView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShellConsoleView.swift; sourceTree = "<group>"; };
 		187433F6A367F18FCC448DDC /* AppIcon.icns */ = {isa = PBXFileReference; lastKnownFileType = image.icns; path = AppIcon.icns; sourceTree = "<group>"; };
@@ -131,6 +138,7 @@
 		C701DC2120FD365171A0C511 /* ShellJobManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShellJobManager.swift; sourceTree = "<group>"; };
 		DD2385441792714C3385DD28 /* CalculatorEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalculatorEngineTests.swift; sourceTree = "<group>"; };
 		E1E6B80D5E0B5333313B4C27 /* ApplicationCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApplicationCatalog.swift; sourceTree = "<group>"; };
+		E20A5D76080789864AFBB214 /* LauncherTerminalStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherTerminalStoreTests.swift; sourceTree = "<group>"; };
 		E44077ACF2B963B94590B078 /* ScriptMetadataParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScriptMetadataParser.swift; sourceTree = "<group>"; };
 		E5F0A3983DB48B1CC8A4AC98 /* CalculatorEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalculatorEngine.swift; sourceTree = "<group>"; };
 		E6BAC37AB99FEF5CF4386243 /* ProcessPersistentShellSessionManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessPersistentShellSessionManagerTests.swift; sourceTree = "<group>"; };
@@ -140,7 +148,19 @@
 		F952CBEE3A03846C9CD8D0E3 /* ApplicationCatalogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApplicationCatalogTests.swift; sourceTree = "<group>"; };
 		F98B7D65473A4DC5FBCD2992 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		FC585299115FB38609AB5E20 /* LauncherUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherUITests.swift; sourceTree = "<group>"; };
+		FFDD27198EFFF2B1BFA84501 /* LauncherTerminalSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherTerminalSession.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		1CD2FA94C5F630B36D600DC2 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				203FABE2494933F2CBE14A20 /* GhosttyTerminal in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
 		2C538A3FBBA28857E1C3B76B = {
@@ -174,6 +194,8 @@
 				8C8179AFAF0BE5421D6414F9 /* LauncherModelFileBrowserTests.swift */,
 				23A633A776AC0D79DECF9AD0 /* LauncherModelScriptTests.swift */,
 				66D1D64C404FAF1C9CEAFF39 /* LauncherModelShellTests.swift */,
+				0EB1F641AFD8C621AB4FBEF4 /* LauncherTerminalSessionTests.swift */,
+				E20A5D76080789864AFBB214 /* LauncherTerminalStoreTests.swift */,
 				A9559737EBF91FC010116325 /* LauncherViewCommandTests.swift */,
 				B8FF128CD13583C6368BA16A /* LoginItemTests.swift */,
 				E6BAC37AB99FEF5CF4386243 /* ProcessPersistentShellSessionManagerTests.swift */,
@@ -222,6 +244,8 @@
 				E5F0A3983DB48B1CC8A4AC98 /* CalculatorEngine.swift */,
 				456F09D2CE2629861AA3F501 /* FileBrowserEngine.swift */,
 				90295A2700AC7CD5C55F7BE8 /* HotKeyManager.swift */,
+				FFDD27198EFFF2B1BFA84501 /* LauncherTerminalSession.swift */,
+				005AC84363819216F195424B /* LauncherTerminalStore.swift */,
 				6806BDFD401F2AFAD4D08BA8 /* LoginItemManager.swift */,
 				0D88C5541841B20155352CEB /* PersistentShellSessionManager.swift */,
 				8D368412C1CCFBA40D8AFCC0 /* QuickLookController.swift */,
@@ -340,6 +364,7 @@
 			buildPhases = (
 				9F330B85037F2145AB79B845 /* Sources */,
 				F5897A57B7E91A053961C825 /* Resources */,
+				1CD2FA94C5F630B36D600DC2 /* Frameworks */,
 			);
 			buildRules = (
 			);
@@ -347,6 +372,7 @@
 			);
 			name = Launcher;
 			packageProductDependencies = (
+				8273FA4052FBF00930A8CC45 /* GhosttyTerminal */,
 			);
 			productName = Launcher;
 			productReference = 2DDD8EC1F69637F4635296DB /* Launcher.app */;
@@ -382,6 +408,9 @@
 			);
 			mainGroup = 2C538A3FBBA28857E1C3B76B;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				FA67942DEF772E126BE5FBB7 /* XCRemoteSwiftPackageReference "libghostty-spm" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = E1CCF1576335D8ACA35843F3 /* Products */;
 			projectDirPath = "";
@@ -433,6 +462,8 @@
 				05C8191A6E24D2B2D09256D1 /* LauncherSearchField.swift in Sources */,
 				97E205D4EEC7B758428B8969 /* LauncherSettings.swift in Sources */,
 				042AA99859E02EEA18AFC12D /* LauncherStyle.swift in Sources */,
+				758DD398F96E71205405555C /* LauncherTerminalSession.swift in Sources */,
+				D4FFE211A781EA426AD9773B /* LauncherTerminalStore.swift in Sources */,
 				2ECACD85B0177072B7F4FF3F /* LauncherView.swift in Sources */,
 				5564804FBFF5BA3D4B05D5B7 /* LoginItemManager.swift in Sources */,
 				422ACA2552A7ADB43B97367A /* PersistentShellSessionManager.swift in Sources */,
@@ -465,6 +496,8 @@
 				F00697F53BA583B20761C231 /* LauncherModelFileBrowserTests.swift in Sources */,
 				B223CBCA95451CD251A56423 /* LauncherModelScriptTests.swift in Sources */,
 				0FA7134809B8DCC46E2E6780 /* LauncherModelShellTests.swift in Sources */,
+				A255CCD50AF01B3591AB28C9 /* LauncherTerminalSessionTests.swift in Sources */,
+				ECA5BF10500433084F1CD2F9 /* LauncherTerminalStoreTests.swift in Sources */,
 				1085E97C3F3E3DCDA467D6EC /* LauncherViewCommandTests.swift in Sources */,
 				ACD761DEB815A677F35E18F6 /* LoginItemTests.swift in Sources */,
 				772B11A6AF85380BA6359DF1 /* ProcessPersistentShellSessionManagerTests.swift in Sources */,
@@ -764,6 +797,25 @@
 			defaultConfigurationName = Debug;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		FA67942DEF772E126BE5FBB7 /* XCRemoteSwiftPackageReference "libghostty-spm" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/stevemurr/libghostty-spm";
+			requirement = {
+				kind = revision;
+				revision = ca4cffd668f958e1fe5da9cbf31f460f3ba01533;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		8273FA4052FBF00930A8CC45 /* GhosttyTerminal */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = FA67942DEF772E126BE5FBB7 /* XCRemoteSwiftPackageReference "libghostty-spm" */;
+			productName = GhosttyTerminal;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = E4F391DA61B0612FDBF03A95 /* Project object */;
 }

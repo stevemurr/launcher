@@ -19,6 +19,7 @@ enum LauncherStyle {
     static let footerHeight: CGFloat = 39
     static let paneHeaderHeight: CGFloat = 32
     static let panelCornerRadius: CGFloat = 16
+    static let terminalSideBorderWidth: CGFloat = 3
 
     // MARK: - Settings screen
 
