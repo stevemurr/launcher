@@ -3,6 +3,29 @@ import XCTest
 
 @MainActor
 final class LauncherTerminalStoreTests: XCTestCase {
+    func testPinnedSessionCannotBeRemountedByLauncherSelection() throws {
+        let store = LauncherTerminalStore()
+        let first = store.createSession()
+        let session = try XCTUnwrap(store.session(for: first.id))
+        XCTAssertTrue(store.setPinned(true, for: first.id))
+        XCTAssertNil(store.selectedSessionID)
+        XCTAssertTrue(store.summaries[0].isPinned)
+        XCTAssertFalse(store.selectSession(first.id))
+
+        let second = store.createSession()
+        XCTAssertEqual(store.selectedSessionID, second.id)
+        XCTAssertFalse(store.selectSession(first.id))
+        XCTAssertEqual(store.selectedSessionID, second.id)
+        session.terminalDidChangeWorkingDirectory("/tmp")
+        XCTAssertTrue(store.summaries[0].isPinned, "metadata updates must preserve window ownership")
+
+        XCTAssertTrue(store.setPinned(false, for: first.id))
+        XCTAssertTrue(store.selectSession(first.id))
+        XCTAssertTrue(store.selectedSession === session)
+        XCTAssertNotEqual(session.phase, .exited)
+        store.terminateAll()
+    }
+
     func testCreatesStableNamedSessionsAndSelectsNewestByDefault() throws {
         let store = LauncherTerminalStore()
 

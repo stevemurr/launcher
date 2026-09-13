@@ -1,3 +1,4 @@
+import AppKit
 import Darwin
 import XCTest
 
@@ -7,7 +8,10 @@ final class LauncherUITests: XCTestCase {
     override func setUpWithError() throws {
         continueAfterFailure = false
         app = XCUIApplication()
-        app.launchArguments = ["--ui-testing"]
+        app.launchArguments = ["--ui-testing", "-launcher.terminalSize", "standard"]
+        if name.contains("testPinnedTerminals") {
+            app.launchArguments.append("--ui-testing-hotkey")
+        }
         if name.contains("testDarkAppearance") {
             app.launchArguments.append("--ui-testing-dark")
         }
@@ -111,6 +115,121 @@ final class LauncherUITests: XCTestCase {
         attachment.name = "Full-width native terminal"
         attachment.lifetime = .keepAlways
         add(attachment)
+    }
+
+    func testTerminalSizeShortcutsPreserveSessionAndKeyboardFocus() {
+        let terminal = enterNativeTerminal()
+        XCTAssertTrue(waitForPanelWidth(990))
+        let dialog = app.dialogs.firstMatch
+        let panel = dialog.exists ? dialog : app.windows.firstMatch
+        let standard = panel.frame
+        let available = NSScreen.main?.visibleFrame.size ?? CGSize(width: 1440, height: 900)
+        let largerWidth = standard.width * min(1.25, available.width / standard.width, available.height / standard.height)
+        sendTerminalCommand("export LAUNCHER_SIZE_DIRECTORY=/tmp", to: terminal)
+
+        app.typeKey("2", modifierFlags: [.command])
+        XCTAssertTrue(waitForPanelWidth(largerWidth))
+        XCTAssertEqual(panel.frame.width / panel.frame.height, standard.width / standard.height, accuracy: 0.005)
+        XCTAssertTrue(app.buttons["shell.toggleSize"].label.contains("Largest"))
+
+        // Do not click the terminal again: resizing must retain keyboard focus
+        // and the exported variable must still belong to this exact shell.
+        app.typeText("cd \"$LAUNCHER_SIZE_DIRECTORY\"")
+        app.typeKey(.return, modifierFlags: [])
+        let directory = app.descendants(matching: .any)["shell.workingDirectory"].firstMatch
+        XCTAssertTrue(waitForElement(directory, containing: "tmp"))
+
+        app.typeKey("1", modifierFlags: [.command])
+        XCTAssertTrue(waitForPanelWidth(990))
+        XCTAssertEqual(panel.frame.height, standard.height, accuracy: 1)
+        app.buttons["shell.toggleSize"].click()
+        XCTAssertTrue(waitForPanelWidth(largerWidth))
+        returnToLauncherFromTerminal()
+        XCTAssertEqual(panel.frame.height, standard.height, accuracy: 1)
+        _ = enterNativeTerminal()
+        XCTAssertTrue(waitForPanelWidth(largerWidth), "new terminals should reuse the saved size")
+
+        app.terminate()
+        // Remove the test's initial preference override so this launch reads
+        // the size saved to the app's persistent defaults.
+        app.launchArguments = ["--ui-testing"]
+        app.launch()
+        _ = enterNativeTerminal()
+        XCTAssertTrue(waitForPanelWidth(largerWidth), "larger size should survive an app restart")
+        app.typeKey("1", modifierFlags: [.command])
+        XCTAssertTrue(waitForPanelWidth(990))
+        app.terminate()
+        app.launch()
+        _ = enterNativeTerminal()
+        XCTAssertTrue(waitForPanelWidth(990), "standard size should also survive an app restart")
+        let largestWidth = standard.width * min(1.5, available.width / standard.width, available.height / standard.height)
+        app.typeKey("3", modifierFlags: [.command])
+        XCTAssertTrue(waitForPanelWidth(largestWidth))
+        XCTAssertTrue(app.buttons["shell.toggleSize"].label.contains("Standard"))
+        app.terminate()
+        app.launch()
+        _ = enterNativeTerminal()
+        XCTAssertTrue(waitForPanelWidth(largestWidth), "largest size should survive an app restart")
+    }
+
+    func testPinnedTerminalsStayOpenWhileLauncherIsReusedAndCanBeDraggedAndReattached() {
+        let firstTerminal = enterNativeTerminal()
+        sendTerminalCommand("export LAUNCHER_PIN_DIRECTORY=/tmp", to: firstTerminal)
+        app.typeKey("p", modifierFlags: [.command])
+        let firstWindow = app.descendants(matching: .any)["terminal.window.Shell 1"].firstMatch
+        XCTAssertTrue(firstWindow.waitForExistence(timeout: 5))
+        XCTAssertTrue(firstWindow.buttons["shell.togglePin"].label.contains("Unpin"))
+
+        app.typeKey(" ", modifierFlags: [.option])
+        XCTAssertTrue(app.textFields["launcher.search"].waitForExistence(timeout: 5))
+        let secondTerminal = enterNativeTerminal()
+        sendTerminalCommand("export LAUNCHER_PIN_DIRECTORY=/var", to: secondTerminal)
+        app.typeKey("p", modifierFlags: [.command])
+        let secondWindow = app.descendants(matching: .any)["terminal.window.Shell 2"].firstMatch
+        XCTAssertTrue(secondWindow.waitForExistence(timeout: 5))
+        XCTAssertTrue(firstWindow.exists)
+        let secondSize = secondWindow.frame.size
+
+        app.typeKey("k", modifierFlags: [.command])
+        let firstResult = app.buttons["result.Shell 1"]
+        XCTAssertTrue(firstResult.waitForExistence(timeout: 5))
+        XCTAssertTrue(firstResult.label.contains("Pinned"))
+        firstResult.click()
+        XCTAssertTrue(firstWindow.exists)
+        XCTAssertFalse(app.textFields["launcher.search"].isHittable)
+
+        let origin = firstWindow.frame.origin
+        let dragStart = firstWindow.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.02))
+        dragStart.click(forDuration: 0.2, thenDragTo: dragStart.withOffset(CGVector(dx: 40, dy: 35)))
+        XCTAssertGreaterThan(abs(firstWindow.frame.minX - origin.x) + abs(firstWindow.frame.minY - origin.y), 15)
+
+        app.typeKey("3", modifierFlags: [.command])
+        XCTAssertTrue(firstWindow.buttons["shell.toggleSize"].label.contains("Standard"))
+        XCTAssertEqual(secondWindow.frame.size, secondSize, "resizing one pin must not resize another")
+        app.typeText("cd \"$LAUNCHER_PIN_DIRECTORY\"")
+        app.typeKey(.return, modifierFlags: [])
+        XCTAssertTrue(waitForElement(firstWindow.descendants(matching: .any)["shell.workingDirectory"].firstMatch, containing: "tmp"))
+
+        app.typeKey("p", modifierFlags: [.command])
+        let launcher = app.descendants(matching: .any)["launcher.window"].firstMatch
+        XCTAssertTrue(launcher.waitForExistence(timeout: 5))
+        XCTAssertTrue(waitForElement(launcher.descendants(matching: .any)["shell.workingDirectory"].firstMatch, containing: "tmp"))
+        XCTAssertTrue(secondWindow.exists)
+        XCTAssertFalse(launcher.buttons["shell.togglePin"].label.contains("Unpin"))
+
+        app.typeKey("k", modifierFlags: [.command])
+        app.buttons["result.Shell 2"].click()
+        app.typeText("cd \"$LAUNCHER_PIN_DIRECTORY\"")
+        app.typeKey(.return, modifierFlags: [])
+        XCTAssertTrue(waitForElement(secondWindow.descendants(matching: .any)["shell.workingDirectory"].firstMatch, containing: "var"))
+        secondWindow.buttons[XCUIIdentifierCloseWindow].click()
+        app.typeKey(" ", modifierFlags: [.option])
+        let secondResult = app.buttons["result.Shell 2"]
+        XCTAssertTrue(secondResult.waitForExistence(timeout: 5))
+        XCTAssertFalse(secondResult.label.contains("Pinned"))
+        secondResult.click()
+        XCTAssertTrue(waitForElement(launcher.descendants(matching: .any)["shell.workingDirectory"].firstMatch, containing: "var"),
+                      "closing a detached window must retain its shell for later resumption")
     }
 
     func testNativeTerminalSessionsListNewestFirstAndResumeTheirExactState() {

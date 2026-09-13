@@ -7,9 +7,14 @@ import SwiftUI
 /// the retained terminal surface.
 @MainActor
 struct ShellConsoleView: View {
-    @ObservedObject var model: LauncherModel
     @ObservedObject var terminalSession: LauncherTerminalSession
     let displayName: String
+    let terminalSize: LauncherTerminalSize
+    let isPinned: Bool
+    let onResize: (LauncherTerminalSize) -> Void
+    let onReturnToLauncher: () -> Void
+    let onSettings: () -> Void
+    let onPin: () -> Void
 
     private let chrome = Color(nsColor: LauncherTerminalPalette.chrome)
 
@@ -36,9 +41,6 @@ struct ShellConsoleView: View {
         .environment(\.colorScheme, .dark)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("shell.console")
-        .onDisappear {
-            terminalSession.setVisible(false)
-        }
         .alert(
             "Paste into terminal?",
             isPresented: pasteAlertIsPresented,
@@ -78,7 +80,7 @@ struct ShellConsoleView: View {
             statusBadge
 
             Button {
-                model.showSettings()
+                onSettings()
             } label: {
                 Image(systemName: "gearshape")
                     .font(.system(size: 15, weight: .semibold))
@@ -119,7 +121,7 @@ struct ShellConsoleView: View {
     private var footer: some View {
         HStack {
             Button {
-                model.leaveShellMode()
+                onReturnToLauncher()
             } label: {
                 HStack(spacing: 9) {
                     Text("⌘K")
@@ -140,6 +142,28 @@ struct ShellConsoleView: View {
             .accessibilityIdentifier("shell.returnToLauncher")
 
             Spacer()
+
+            Button {
+                onPin()
+            } label: {
+                Label(isPinned ? "Unpin  ⌘P" : "Pin  ⌘P", systemImage: isPinned ? "pin.slash" : "pin")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.white.opacity(0.52))
+            }
+            .buttonStyle(.plain)
+            .help(isPinned ? "Return this terminal to Launcher (Command-P)" : "Detach into a draggable window (Command-P)")
+            .accessibilityIdentifier("shell.togglePin")
+
+            Button {
+                onResize(terminalSize.next)
+            } label: {
+                Text(terminalSize.next.shortcutLabel)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.white.opacity(0.52))
+            }
+            .buttonStyle(.plain)
+            .help("Standard (Command-1) · Larger (Command-2) · Largest (Command-3)")
+            .accessibilityIdentifier("shell.toggleSize")
         }
         .padding(.horizontal, 17)
         .frame(maxWidth: .infinity, maxHeight: .infinity)

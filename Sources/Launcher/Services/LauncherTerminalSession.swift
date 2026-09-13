@@ -37,7 +37,7 @@ struct LauncherTerminalPastePrompt: Identifiable {
 
 /// Launcher-owned Ghostty configuration. User Ghostty configuration is not
 /// loaded, so the embedded surface remains visually stable and reserves the
-/// launcher's one terminal-mode shortcut.
+/// launcher's terminal-mode shortcuts.
 enum LauncherTerminalConfiguration {
     static func base(shell: String = loginShell()) -> TerminalConfiguration {
         TerminalConfiguration { builder in
@@ -51,6 +51,10 @@ enum LauncherTerminalConfiguration {
             builder.withCustom("scrollbar", "never")
             builder.withCustom("notify-on-command-finish", "never")
             builder.withCustom("keybind", "super+k=unbind")
+            builder.withCustom("keybind", "super+1=unbind")
+            builder.withCustom("keybind", "super+2=unbind")
+            builder.withCustom("keybind", "super+3=unbind")
+            builder.withCustom("keybind", "super+p=unbind")
         }
     }
 

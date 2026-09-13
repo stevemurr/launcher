@@ -49,12 +49,148 @@ final class LauncherLayoutTests: XCTestCase {
 
         let hosting = NSHostingView(
             rootView: LauncherRootView(model: model, terminalStore: terminalStore)
+                .transaction { $0.disablesAnimations = true }
         )
         hosting.layoutSubtreeIfNeeded()
 
         XCTAssertEqual(hosting.fittingSize.width, LauncherStyle.expandedPanelWidth)
         XCTAssertEqual(hosting.fittingSize.height, LauncherStyle.panelHeight)
+
+        let sessionID = model.selectedShellSessionID
+        let session = terminalStore.selectedSession
+        XCTAssertTrue(model.setTerminalSize(.larger))
+        hosting.layoutSubtreeIfNeeded()
+        XCTAssertEqual(hosting.fittingSize.width, 1237.5, accuracy: 0.5)
+        XCTAssertEqual(hosting.fittingSize.height, 640)
+        XCTAssertTrue(model.setTerminalSize(.largest))
+        hosting.layoutSubtreeIfNeeded()
+        XCTAssertEqual(hosting.fittingSize.width, 1485)
+        XCTAssertEqual(hosting.fittingSize.height, 768)
+        XCTAssertEqual(model.selectedShellSessionID, sessionID)
+        XCTAssertTrue(terminalStore.selectedSession === session)
+
+        XCTAssertTrue(model.setTerminalSize(.standard))
+        hosting.layoutSubtreeIfNeeded()
+        XCTAssertEqual(hosting.fittingSize.width, 990)
+        XCTAssertEqual(hosting.fittingSize.height, 512)
+
+        model.setTerminalSize(.larger)
+        model.leaveShellMode()
+        hosting.layoutSubtreeIfNeeded()
+        XCTAssertEqual(hosting.fittingSize.width, LauncherStyle.panelWidth)
+        XCTAssertEqual(hosting.fittingSize.height, LauncherStyle.panelHeight)
+        XCTAssertFalse(model.setTerminalSize(.larger), "size shortcuts belong only to a visible terminal")
+        model.resumeShellSession(id: sessionID!)
+        XCTAssertEqual(model.terminalSize, .larger)
+        XCTAssertEqual(model.terminalPanelSize, LauncherTerminalSize.larger.size)
+        model.prepareForDismissal()
+        model.prepareForPresentation()
+        XCTAssertEqual(model.terminalSize, .larger)
+        XCTAssertEqual(model.terminalPanelSize, LauncherTerminalSize.larger.size)
         terminalStore.terminateAll()
+    }
+
+    func testTerminalSizePreferenceSurvivesSettingsAndModelRecreation() {
+        let suite = "LauncherLayoutTests-SizePreference-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = LauncherSettings(defaults: defaults)
+        XCTAssertEqual(settings.terminalSize, .standard)
+
+        settings.save(terminalSize: .larger)
+        let restored = LauncherSettings(defaults: UserDefaults(suiteName: suite)!)
+        let model = LauncherModel(settings: restored, isUITesting: true, usesNativeTerminalSessions: true)
+        XCTAssertEqual(model.terminalSize, .larger)
+        XCTAssertEqual(model.terminalPanelSize, LauncherTerminalSize.larger.size)
+        settings.save(terminalSize: .largest)
+        XCTAssertEqual(LauncherSettings(defaults: defaults).terminalSize, .largest)
+        settings.save(terminalSize: .larger)
+
+        model.updateTerminalPanelSize(CGSize(width: 1100, height: 568.89))
+        XCTAssertEqual(LauncherSettings(defaults: defaults).terminalSize, .larger,
+                       "screen constraints must not overwrite the saved preference")
+
+        restored.save(terminalSize: .standard)
+        XCTAssertEqual(LauncherSettings(defaults: defaults).terminalSize, .standard)
+        defaults.set("invalid-size", forKey: "launcher.terminalSize")
+        XCTAssertEqual(LauncherSettings(defaults: defaults).terminalSize, .standard)
+    }
+
+    func testLargerTerminalPreservesCenterAndAspectRatio() {
+        let standard = NSRect(x: 200, y: 150, width: 990, height: 512)
+        let frame = LauncherWindowLifecycle.terminalFrame(standard: standard, size: .larger, visibleFrame: screen)
+        XCTAssertEqual(frame.width, standard.width * 1.25)
+        XCTAssertEqual(frame.height, standard.height * 1.25)
+        XCTAssertEqual(frame.midX, standard.midX)
+        XCTAssertEqual(frame.midY, standard.midY)
+        let restored = LauncherWindowLifecycle.terminalFrame(standard: standard, size: .standard, visibleFrame: screen)
+        XCTAssertEqual(restored, standard)
+    }
+
+    func testLargerTerminalFitsSmallOffsetScreenWithoutChangingAspectRatio() {
+        let smallScreen = NSRect(x: -1200, y: 40, width: 1100, height: 600)
+        let standard = NSRect(x: -1090, y: 110, width: 990, height: 512)
+        let frame = LauncherWindowLifecycle.terminalFrame(standard: standard, size: .larger, visibleFrame: smallScreen)
+        XCTAssertTrue(smallScreen.contains(frame))
+        XCTAssertEqual(frame.width / frame.height, standard.width / standard.height, accuracy: 0.0001)
+        XCTAssertGreaterThan(frame.width, standard.width)
+    }
+
+    @MainActor
+    func testTerminalSizeShortcutsAreConsumedOnlyWhenAccepted() throws {
+        let panel = LauncherPanel(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: false)
+        var selections: [LauncherTerminalSize] = []
+        var acceptsResize = true
+        panel.onTerminalSize = { size in
+            guard acceptsResize else { return false }
+            selections.append(size)
+            return true
+        }
+        func event(_ key: String, modifiers: NSEvent.ModifierFlags = .command) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0,
+                windowNumber: 0, context: nil, characters: key, charactersIgnoringModifiers: key,
+                isARepeat: false, keyCode: key == "1" ? 18 : 19
+            ))
+        }
+        XCTAssertTrue(panel.performKeyEquivalent(with: try event("2")))
+        XCTAssertTrue(panel.performKeyEquivalent(with: try event("1", modifiers: [.command, .capsLock])))
+        XCTAssertTrue(panel.performKeyEquivalent(with: try event("3")))
+        XCTAssertEqual(selections, [.larger, .standard, .largest])
+        XCTAssertFalse(panel.performKeyEquivalent(with: try event("2", modifiers: [.command, .shift])))
+        acceptsResize = false
+        XCTAssertFalse(panel.performKeyEquivalent(with: try event("2")))
+        XCTAssertEqual(selections.count, 3)
+    }
+
+    @MainActor
+    func testCommandPRemainsAvailableOutsideTerminalMode() throws {
+        let panel = LauncherPanel(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: false)
+        let event = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0,
+            windowNumber: 0, context: nil, characters: "p", charactersIgnoringModifiers: "p",
+            isARepeat: false, keyCode: 35
+        ))
+        panel.onPinTerminal = { false }
+        XCTAssertFalse(panel.performKeyEquivalent(with: event))
+        panel.onPinTerminal = { true }
+        XCTAssertTrue(panel.performKeyEquivalent(with: event))
+    }
+
+    @MainActor
+    func testPinnedResultFocusDoesNotSelectOrRemountTheSession() {
+        let defaults = UserDefaults(suiteName: "LauncherPinnedRouting-\(UUID().uuidString)")!
+        let model = LauncherModel(settings: LauncherSettings(defaults: defaults), isUITesting: true,
+                                  usesNativeTerminalSessions: true)
+        let id = ShellSessionID()
+        var focused: [ShellSessionID] = []
+        model.onFocusPinnedTerminalSession = { focused.append($0); return true }
+        model.onSelectNativeTerminalSession = { _ in XCTFail("pinned surfaces must stay in their window"); return false }
+        model.resumeShellSession(id: id)
+        XCTAssertEqual(focused, [id])
+        XCTAssertFalse(model.isShellMode)
+        XCTAssertNil(model.selectedShellSessionID)
+        XCTAssertFalse(model.pinTerminal())
     }
 
     /// The results region shrinks as the window grows, so the pane costs the

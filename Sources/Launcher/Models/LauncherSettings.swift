@@ -3,11 +3,13 @@ import Foundation
 final class LauncherSettings: ObservableObject {
     @Published private(set) var hotKey: HotKey
     @Published private(set) var scriptsDirectory: URL
+    @Published private(set) var terminalSize: LauncherTerminalSize
     @Published var hotKeyError: String?
 
     private let defaults: UserDefaults
     private static let hotKeyKey = "launcher.hotKey"
     private static let scriptsDirectoryKey = "launcher.scriptsDirectory"
+    private static let terminalSizeKey = "launcher.terminalSize"
 
     static var defaultScriptsDirectory: URL {
         FileManager.default.homeDirectoryForCurrentUser
@@ -16,6 +18,8 @@ final class LauncherSettings: ObservableObject {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        terminalSize = defaults.string(forKey: Self.terminalSizeKey)
+            .flatMap(LauncherTerminalSize.init(rawValue:)) ?? .standard
         if let data = defaults.data(forKey: Self.hotKeyKey),
            let stored = try? JSONDecoder().decode(HotKey.self, from: data) {
             if stored.isSafeGlobalShortcut {
@@ -50,5 +54,10 @@ final class LauncherSettings: ObservableObject {
     func save(scriptsDirectory: URL) {
         self.scriptsDirectory = scriptsDirectory
         defaults.set(scriptsDirectory.path, forKey: Self.scriptsDirectoryKey)
+    }
+
+    func save(terminalSize: LauncherTerminalSize) {
+        self.terminalSize = terminalSize
+        defaults.set(terminalSize.rawValue, forKey: Self.terminalSizeKey)
     }
 }

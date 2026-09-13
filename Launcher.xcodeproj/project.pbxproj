@@ -49,6 +49,7 @@
 		ADE5E8B46E9CB62068D855E9 /* ScriptRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = C37CD42E041B06B18157EA04 /* ScriptRunner.swift */; };
 		B0E04C68AD4A1E6D81EDE12D /* SearchMatcherTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB1552D65C5E9701D5DBEDEA /* SearchMatcherTests.swift */; };
 		B223CBCA95451CD251A56423 /* LauncherModelScriptTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23A633A776AC0D79DECF9AD0 /* LauncherModelScriptTests.swift */; };
+		B73E9D6B53977F025597B676 /* PinnedTerminalWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE84C7ADA38804C811F21B3D /* PinnedTerminalWindowController.swift */; };
 		BD6BD9970932CC4EB2352815 /* HotKeyRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 98FF4BD600895A550C41007B /* HotKeyRecorder.swift */; };
 		C258D4BC938D6602BECC3542 /* LauncherItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 92E11DDA382BE4016522B31D /* LauncherItem.swift */; };
 		C5523A53CF608771CE02846E /* SearchMatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3CD275177CC43FB2971B93F /* SearchMatcher.swift */; };
@@ -137,6 +138,7 @@
 		C37CD42E041B06B18157EA04 /* ScriptRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScriptRunner.swift; sourceTree = "<group>"; };
 		C701DC2120FD365171A0C511 /* ShellJobManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShellJobManager.swift; sourceTree = "<group>"; };
 		DD2385441792714C3385DD28 /* CalculatorEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalculatorEngineTests.swift; sourceTree = "<group>"; };
+		DE84C7ADA38804C811F21B3D /* PinnedTerminalWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PinnedTerminalWindowController.swift; sourceTree = "<group>"; };
 		E1E6B80D5E0B5333313B4C27 /* ApplicationCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApplicationCatalog.swift; sourceTree = "<group>"; };
 		E20A5D76080789864AFBB214 /* LauncherTerminalStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherTerminalStoreTests.swift; sourceTree = "<group>"; };
 		E44077ACF2B963B94590B078 /* ScriptMetadataParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScriptMetadataParser.swift; sourceTree = "<group>"; };
@@ -222,6 +224,7 @@
 				55A099A844B590130F3650B9 /* LauncherSearchField.swift */,
 				953AD0B06FE7658A0C361BB1 /* LauncherStyle.swift */,
 				78CA243E2DE30FA30AD048FA /* LauncherView.swift */,
+				DE84C7ADA38804C811F21B3D /* PinnedTerminalWindowController.swift */,
 				EAE88098541CEEB0A11C5D65 /* ScriptCommandViews.swift */,
 				16F64CE22D411B4C25FB2949 /* ShellConsoleView.swift */,
 				265DBA07B8910347D94016D1 /* VisualEffectView.swift */,
@@ -467,6 +470,7 @@
 				2ECACD85B0177072B7F4FF3F /* LauncherView.swift in Sources */,
 				5564804FBFF5BA3D4B05D5B7 /* LoginItemManager.swift in Sources */,
 				422ACA2552A7ADB43B97367A /* PersistentShellSessionManager.swift in Sources */,
+				B73E9D6B53977F025597B676 /* PinnedTerminalWindowController.swift in Sources */,
 				186A63C2A6DA9494480A3961 /* QuickLookController.swift in Sources */,
 				D25355B6291F652BB5845034 /* ScriptCommand.swift in Sources */,
 				F249BBE16A79E212139415AA /* ScriptCommandCatalog.swift in Sources */,

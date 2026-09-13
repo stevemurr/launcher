@@ -12,6 +12,7 @@ struct LauncherTerminalSummary: Identifiable, Equatable {
     let displayName: String
     var phase: LauncherTerminalPhase
     var workingDirectory: String
+    var isPinned = false
 }
 
 /// Owns every persistent native terminal session in Launcher.
@@ -105,7 +106,8 @@ final class LauncherTerminalStore: ObservableObject {
 
     @discardableResult
     func selectSession(_ id: ShellSessionID) -> Bool {
-        guard sessions[id] != nil else { return false }
+        guard sessions[id] != nil,
+              summaries.first(where: { $0.id == id })?.isPinned != true else { return false }
         guard selectedSessionID != id else { return true }
 
         selectedSession?.setVisible(false)
@@ -116,6 +118,16 @@ final class LauncherTerminalStore: ObservableObject {
     func clearSelection() {
         selectedSession?.setVisible(false)
         selectedSessionID = nil
+    }
+
+    /// A pinned surface belongs to its own window and must never be selected
+    /// (and therefore hidden or remounted) by the launcher panel.
+    @discardableResult
+    func setPinned(_ pinned: Bool, for id: ShellSessionID) -> Bool {
+        guard let index = summaries.firstIndex(where: { $0.id == id }) else { return false }
+        if pinned, selectedSessionID == id { clearSelection() }
+        summaries[index].isPinned = pinned
+        return true
     }
 
     @discardableResult

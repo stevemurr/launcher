@@ -8,6 +8,8 @@ final class LauncherPanel: NSPanel {
     var onCancel: (() -> Void)?
     var onInterrupt: (() -> Bool)?
     var onReturnToLauncher: (() -> Bool)?
+    var onTerminalSize: ((LauncherTerminalSize) -> Bool)?
+    var onPinTerminal: (() -> Bool)?
     weak var quickLook: QuickLookController?
 
     override var canBecomeKey: Bool { true }
@@ -21,6 +23,15 @@ final class LauncherPanel: NSPanel {
         let meaningfulModifiers = event.modifierFlags
             .intersection(.deviceIndependentFlagsMask)
             .subtracting([.capsLock, .function])
+        if event.type == .keyDown, meaningfulModifiers == .command,
+           let key = event.charactersIgnoringModifiers,
+           let size = LauncherTerminalSize.shortcut(key),
+           onTerminalSize?(size) == true {
+            return true
+        }
+        if event.type == .keyDown, meaningfulModifiers == .command,
+           event.charactersIgnoringModifiers?.lowercased() == "p",
+           onPinTerminal?() == true { return true }
         if event.type == .keyDown,
            meaningfulModifiers == .command,
            event.charactersIgnoringModifiers?.lowercased() == "k",
@@ -62,6 +73,28 @@ final class LauncherPanel: NSPanel {
 }
 
 enum LauncherWindowLifecycle {
+    /// Scale both dimensions together, preserve the standard frame's center,
+    /// and shift only as needed to stay inside the screen's usable area.
+    static func terminalFrame(standard: NSRect, size: LauncherTerminalSize, visibleFrame: NSRect?) -> NSRect {
+        var targetSize = size.size
+        if let visibleFrame {
+            let scale = min(1, visibleFrame.width / targetSize.width, visibleFrame.height / targetSize.height)
+            targetSize.width *= scale
+            targetSize.height *= scale
+        }
+        var frame = NSRect(
+            x: standard.midX - targetSize.width / 2,
+            y: standard.midY - targetSize.height / 2,
+            width: targetSize.width,
+            height: targetSize.height
+        )
+        if let visibleFrame {
+            frame.origin.x = max(visibleFrame.minX, min(frame.minX, visibleFrame.maxX - frame.width))
+            frame.origin.y = max(visibleFrame.minY, min(frame.minY, visibleFrame.maxY - frame.height))
+        }
+        return frame
+    }
+
     static func shouldRekeyLauncher(appIsActive: Bool, launcherIsVisible: Bool) -> Bool {
         appIsActive && launcherIsVisible
     }
@@ -122,6 +155,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let quickLookController = QuickLookController()
     /// Where the panel sat before the output pane pushed it off a screen edge.
     private var compactFrameOrigin: NSPoint?
+    private var standardTerminalFrame: NSRect?
+    private var pinnedTerminals: [ShellSessionID: PinnedTerminalWindowController] = [:]
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Ghostty inherits Launcher's process environment. Remove presentation
@@ -138,6 +173,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if !isUITesting {
             configureStatusItem()
             registerInitialHotKey()
+        } else if ProcessInfo.processInfo.arguments.contains("--ui-testing-hotkey") {
+            // Only the isolated VM interaction test opts into a global key.
+            _ = hotKeyManager.register(.default)
         }
         model.loadApplications()
         showLauncher(screen: .search)
@@ -148,6 +186,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        for controller in pinnedTerminals.values {
+            controller.onClose = nil
+            controller.close()
+        }
+        pinnedTerminals.removeAll()
         terminalStore.terminateAll()
         model.terminateRunningProcess()
     }
@@ -166,7 +209,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             guard let self, let panel = self.panel else { return }
             let quickLookIsVisible = QLPreviewPanel.sharedPreviewPanelExists()
                 && QLPreviewPanel.shared().isVisible
-            let hasAnotherKeyWindow = NSApp.keyWindow.map { $0 !== panel } ?? false
+            let hasAnotherKeyWindow = NSApp.keyWindow.map { keyWindow in
+                keyWindow !== panel && !self.pinnedTerminals.values.contains { $0.window === keyWindow }
+            } ?? false
             if LauncherWindowLifecycle.shouldHideLauncher(
                 appIsActive: NSApp.isActive,
                 launcherIsKey: panel.isKeyWindow,
@@ -183,7 +228,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         model.onOutputPanePresentationChange = { [weak self] isPresented in
             self?.setOutputPanePresented(isPresented)
         }
+        model.onTerminalSizeChange = { [weak self] size in
+            guard let self, let panel = self.panel else { return size.size }
+            if self.standardTerminalFrame == nil {
+                self.standardTerminalFrame = panel.frame
+            }
+            let frame = LauncherWindowLifecycle.terminalFrame(
+                standard: self.standardTerminalFrame ?? panel.frame,
+                size: size,
+                visibleFrame: panel.screen?.visibleFrame ?? self.screenContainingPanel(panel)?.visibleFrame
+            )
+            // Keep the native surface mounted while AppKit and SwiftUI resize
+            // together, preserving keyboard focus and updating the PTY grid.
+            if panel.isVisible, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = LauncherStyle.terminalResizeAnimationDuration
+                    context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                    context.allowsImplicitAnimation = true
+                    panel.animator().setFrame(frame, display: true)
+                }
+            } else {
+                panel.setFrame(frame, display: panel.isVisible)
+            }
+            return frame.size
+        }
         model.onQuickLook = { [weak self] url in self?.quickLookController.toggle(url) }
+        model.onPinNativeTerminalSession = { [weak self] id in self?.pinTerminal(id) ?? false }
+        model.onFocusPinnedTerminalSession = { [weak self] id in
+            guard let self, let controller = self.pinnedTerminals[id] else { return false }
+            self.hideLauncher()
+            controller.activate()
+            return true
+        }
         model.onCreateNativeTerminalSession = { [weak self] launchInput in
             dispatchPrecondition(condition: .onQueue(.main))
             guard let self else { return nil }
@@ -203,6 +279,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         model.onCloseNativeTerminalSession = { [weak self] id in
             dispatchPrecondition(condition: .onQueue(.main))
+            self?.pinnedTerminals[id]?.close()
             return self?.terminalStore.closeSession(id) ?? false
         }
         model.onSendNativeTerminalInput = { [weak self] id, input in
@@ -255,7 +332,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self.model.leaveShellMode()
             return true
         }
+        panel.onTerminalSize = { [weak self] size in
+            self?.model.setTerminalSize(size) ?? false
+        }
+        panel.onPinTerminal = { [weak self] in self?.model.pinTerminal() ?? false }
         panel.title = "Launcher"
+        panel.setAccessibilityIdentifier("launcher.window")
         panel.delegate = self
         panel.isFloatingPanel = true
         panel.level = .floating
@@ -312,11 +394,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func toggleLauncher() {
-        if panel?.isVisible == true {
+        if panel?.isVisible == true, panel?.isKeyWindow == true {
             hideLauncher()
         } else {
             showLauncher(screen: .search)
         }
+    }
+
+    private func pinTerminal(_ id: ShellSessionID) -> Bool {
+        guard let panel, model.selectedShellSessionID == id,
+              pinnedTerminals[id] == nil,
+              let session = terminalStore.session(for: id),
+              let summary = terminalStore.summaries.first(where: { $0.id == id }) else { return false }
+        let frame = panel.frame
+        let size = model.terminalSize
+        panel.orderOut(nil)
+        guard terminalStore.setPinned(true, for: id) else { return false }
+        model.leaveShellMode()
+        hideLauncher()
+
+        let controller = PinnedTerminalWindowController(
+            session: session, displayName: summary.displayName, size: size, frame: frame, settings: settings
+        )
+        controller.onClose = { [weak self] in
+            guard let self else { return }
+            self.pinnedTerminals.removeValue(forKey: id)
+            self.terminalStore.setPinned(false, for: id)
+        }
+        controller.onUnpin = { [weak self] in
+            guard let self else { return }
+            self.pinnedTerminals[id]?.close()
+            self.model.resumeShellSession(id: id)
+            self.showLauncher(screen: .search)
+        }
+        controller.onLauncher = { [weak self] in
+            self?.model.leaveShellMode()
+            self?.showLauncher(screen: .search)
+        }
+        controller.onSettings = { [weak self] in self?.showLauncher(screen: .settings) }
+        pinnedTerminals[id] = controller
+        controller.activate()
+        return true
     }
 
     private func showLauncher(screen: LauncherScreen) {
@@ -351,6 +469,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// edge so the search field and results stay put under the user's eye.
     private func setOutputPanePresented(_ isPresented: Bool) {
         guard let panel else { return }
+        standardTerminalFrame = nil
         if isPresented, compactFrameOrigin == nil {
             // A rapid expand → collapse → expand can arrive while AppKit is
             // still animating the first transition. Preserve the original
@@ -363,7 +482,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let preferredOrigin = isPresented
             ? (compactFrameOrigin ?? panel.frame.origin)
             : compactFrameOrigin
-        let targetFrame = constrainedFrame(for: panel, width: width, preferredOrigin: preferredOrigin)
+        var targetFrame = constrainedFrame(for: panel, width: width, preferredOrigin: preferredOrigin)
+        targetFrame.size.height = LauncherStyle.panelHeight
+        if model.panelPresentation == .shellConsole {
+            standardTerminalFrame = targetFrame
+            targetFrame = LauncherWindowLifecycle.terminalFrame(
+                standard: targetFrame,
+                size: model.terminalSize,
+                visibleFrame: panel.screen?.visibleFrame ?? screenContainingPanel(panel)?.visibleFrame
+            )
+            model.updateTerminalPanelSize(targetFrame.size)
+        }
 
         guard panel.isVisible,
               !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
@@ -373,7 +502,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = LauncherStyle.drawerAnimationDuration
+            context.duration = model.panelPresentation == .shellConsole
+                ? LauncherStyle.terminalResizeAnimationDuration : LauncherStyle.drawerAnimationDuration
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             context.allowsImplicitAnimation = true
             panel.animator().setFrame(targetFrame, display: true)
@@ -410,8 +540,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let screen = NSScreen.screens.first { NSMouseInRect(mouseLocation, $0.frame, false) } ?? NSScreen.main
         guard let visibleFrame = screen?.visibleFrame else {
             panel.center()
+            standardTerminalFrame = nil
             return
         }
+        if model.panelPresentation == .shellConsole {
+            let standard = NSRect(
+                x: visibleFrame.midX - LauncherStyle.expandedPanelWidth / 2,
+                y: visibleFrame.midY - LauncherStyle.panelHeight / 2,
+                width: LauncherStyle.expandedPanelWidth,
+                height: LauncherStyle.panelHeight
+            )
+            let frame = LauncherWindowLifecycle.terminalFrame(
+                standard: standard, size: model.terminalSize, visibleFrame: visibleFrame
+            )
+            model.updateTerminalPanelSize(frame.size)
+            panel.setFrame(frame, display: panel.isVisible)
+            standardTerminalFrame = standard
+            return
+        }
+        standardTerminalFrame = nil
         let origin = NSPoint(
             x: visibleFrame.midX - panel.frame.width / 2,
             y: visibleFrame.midY - panel.frame.height / 2

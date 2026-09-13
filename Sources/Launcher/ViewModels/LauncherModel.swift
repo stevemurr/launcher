@@ -351,6 +351,8 @@ final class LauncherModel: ObservableObject {
 
     @Published private(set) var scriptRun: ScriptRunState?
     @Published private(set) var isShellMode = false
+    @Published private(set) var terminalSize: LauncherTerminalSize = .standard
+    @Published private(set) var terminalPanelSize = LauncherTerminalSize.standard.size
     @Published private(set) var shellSessions: [ShellRunState] = []
     @Published private(set) var nativeTerminalSessions: [LauncherTerminalSummary] = []
     @Published private(set) var selectedShellSessionID: ShellSessionID?
@@ -380,6 +382,9 @@ final class LauncherModel: ObservableObject {
     let settings: LauncherSettings
     var onRequestClose: (() -> Void)?
     var onOutputPanePresentationChange: ((Bool) -> Void)?
+    var onTerminalSizeChange: ((LauncherTerminalSize) -> CGSize)?
+    var onPinNativeTerminalSession: ((ShellSessionID) -> Bool)?
+    var onFocusPinnedTerminalSession: ((ShellSessionID) -> Bool)?
     var onHotKeyChange: ((HotKey) -> Bool)?
     var onQuickLook: ((URL) -> Void)?
     var onCreateNativeTerminalSession: ((String) -> LauncherTerminalSummary?)?
@@ -470,6 +475,8 @@ final class LauncherModel: ObservableObject {
     ) {
         let defaultProcessRunner = ProcessScriptRunner()
         self.settings = settings
+        terminalSize = settings.terminalSize
+        terminalPanelSize = settings.terminalSize.size
         self.isUITesting = isUITesting
         self.loginItems = loginItems ?? (isUITesting ? InMemoryLoginItemService() : AppLoginItemService())
         self.scriptRunner = scriptRunner ?? defaultProcessRunner
@@ -1450,9 +1457,13 @@ final class LauncherModel: ObservableObject {
     private func setPanelPresentation(_ presentation: LauncherPanelPresentation) {
         guard panelPresentation != presentation else { return }
         let wasExpanded = panelPresentation.isExpanded
+        let terminalGeometryChanges = (panelPresentation == .shellConsole || presentation == .shellConsole)
+            && (terminalPanelSize != LauncherTerminalSize.standard.size || settings.terminalSize != .standard)
+        if presentation == .shellConsole { terminalSize = settings.terminalSize }
+        terminalPanelSize = terminalSize.size
         panelPresentation = presentation
         let isExpanded = presentation.isExpanded
-        guard wasExpanded != isExpanded else { return }
+        guard wasExpanded != isExpanded || terminalGeometryChanges else { return }
         // Must stay synchronous: showLauncher() relies on the panel having
         // already shrunk before positionPanel() centers it.
         onOutputPanePresentationChange?(isExpanded)
@@ -1590,6 +1601,28 @@ final class LauncherModel: ObservableObject {
         focusSearch()
     }
 
+    @discardableResult
+    func pinTerminal() -> Bool {
+        guard screen == .search, isShellMode, usesNativeTerminalSessions,
+              let id = selectedShellSessionID else { return false }
+        return onPinNativeTerminalSession?(id) ?? false
+    }
+
+    @discardableResult
+    func setTerminalSize(_ size: LauncherTerminalSize) -> Bool {
+        guard screen == .search, isShellMode, usesNativeTerminalSessions else { return false }
+        terminalSize = size
+        settings.save(terminalSize: size)
+        terminalPanelSize = onTerminalSizeChange?(size) ?? size.size
+        return true
+    }
+
+    /// The screen may constrain the saved preset without changing the user's
+    /// preference, so a larger display can use the full size next time.
+    func updateTerminalPanelSize(_ size: CGSize) {
+        terminalPanelSize = size
+    }
+
     private func exitShellMode() {
         guard isShellMode else { return }
         discardSelectedShellIfFinished()
@@ -1618,6 +1651,7 @@ final class LauncherModel: ObservableObject {
 
     func resumeShellSession(id: ShellSessionID) {
         if usesNativeTerminalSessions {
+            if onFocusPinnedTerminalSession?(id) == true { return }
             guard nativeTerminalSessions.contains(where: { $0.id == id }),
                   onSelectNativeTerminalSession?(id) == true else {
                 refreshResults(resetSelection: true)
@@ -2364,7 +2398,7 @@ final class LauncherModel: ObservableObject {
                 case .exited: status = "Exited"
                 case .failed: status = "Unavailable"
                 }
-                let stateDescription = "\(status) in \(displayShellDirectory(summary.workingDirectory))"
+                let stateDescription = "\(summary.isPinned ? "Pinned · " : "")\(status) in \(displayShellDirectory(summary.workingDirectory))"
                 return LauncherItem(
                     id: "shell.\(summary.id.rawValue.uuidString)",
                     title: summary.displayName,

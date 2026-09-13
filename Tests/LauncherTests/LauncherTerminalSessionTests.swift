@@ -23,6 +23,10 @@ final class LauncherTerminalSessionTests: XCTestCase {
                 "scrollbar = never",
                 "notify-on-command-finish = never",
                 "keybind = super+k=unbind",
+                "keybind = super+1=unbind",
+                "keybind = super+2=unbind",
+                "keybind = super+3=unbind",
+                "keybind = super+p=unbind",
             ]
         )
     }

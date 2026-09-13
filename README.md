@@ -10,6 +10,8 @@ Typing `>` as the first character creates a full-width native terminal powered b
 
 The default global shortcut is **Option-Space**. Open Launcher Settings with the gear button or Command-comma, click the shortcut recorder, and press any modified key combination to change it. The shortcut is persisted in `UserDefaults`.
 
+Press **Command-P** in a terminal to pin it in a separate, draggable window. Pinned windows stay open when Launcher is invoked, dismissed, or loses focus. You can pin multiple terminals and resize each independently. Their Running Shells entries focus the existing window. Command-K opens Launcher while keeping the pinned terminal open; Command-P reattaches it. Closing a pinned window keeps its session in Running Shells, while the session's Close action ends it.
+
 Launcher follows the current macOS light or dark appearance automatically.
 
 ## Build and run
@@ -54,6 +56,8 @@ The VM runner copies the resulting `.xcresult` bundle into `test-results/`.
 - Up / Down: move selection
 - Return: open the selected result, or enter the selected directory
 - `>`: create a new native terminal
+- Command-1 / Command-2 / Command-3 in terminal mode: standard / larger / largest size (100%, 125%, and 150% width and height, scaled to fit the screen). Resizing animates, and the chosen size is remembered across terminal openings and app restarts. The footer also cycles the sizes.
+- Command-P in terminal mode: detach into a draggable pinned window, or reattach a pinned terminal
 - Return on a Running Shell: resume that exact terminal
 - Escape / Tab / arrows / Return / Control keys in terminal mode: sent directly to the terminal
 - Command-K in terminal mode: return to Launcher search without stopping the shell

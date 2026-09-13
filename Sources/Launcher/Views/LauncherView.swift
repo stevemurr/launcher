@@ -16,7 +16,8 @@ struct LauncherRootView: View {
     }
 
     private var panelWidth: CGFloat {
-        model.isPanelExpanded ? LauncherStyle.expandedPanelWidth : LauncherStyle.panelWidth
+        if model.panelPresentation == .shellConsole { return model.terminalPanelSize.width }
+        return model.isPanelExpanded ? LauncherStyle.expandedPanelWidth : LauncherStyle.panelWidth
     }
 
     private var drawerAnimation: Animation? {
@@ -87,7 +88,8 @@ struct LauncherRootView: View {
                     .transition(paletteTransition(anchor: .bottomLeading))
             }
         }
-        .frame(width: panelWidth, height: LauncherStyle.panelHeight)
+        .frame(width: panelWidth, height: model.panelPresentation == .shellConsole
+               ? model.terminalPanelSize.height : LauncherStyle.panelHeight)
         .clipShape(RoundedRectangle(cornerRadius: LauncherStyle.panelCornerRadius, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: LauncherStyle.panelCornerRadius, style: .continuous)
@@ -99,6 +101,10 @@ struct LauncherRootView: View {
         .animation(paletteAnimation, value: model.pendingRun)
         .animation(paletteAnimation, value: model.pendingDeletion)
         .animation(drawerAnimation, value: model.panelPresentation)
+        .animation(
+            reduceMotion ? nil : .easeInOut(duration: LauncherStyle.terminalResizeAnimationDuration),
+            value: model.terminalPanelSize
+        )
     }
 }
 
@@ -122,13 +128,18 @@ private struct LauncherSearchView: View {
                 if let id = model.selectedShellSessionID,
                    let terminalSession = terminalStore.session(for: id) {
                     ShellConsoleView(
-                        model: model,
                         terminalSession: terminalSession,
                         displayName: terminalStore.summaries.first(where: { $0.id == id })?.displayName
-                            ?? "Shell"
+                            ?? "Shell",
+                        terminalSize: model.terminalSize,
+                        isPinned: false,
+                        onResize: { model.setTerminalSize($0) },
+                        onReturnToLauncher: { model.leaveShellMode() },
+                        onSettings: { model.showSettings() },
+                        onPin: { model.pinTerminal() }
                     )
                     .id(id.rawValue)
-                    .frame(width: LauncherStyle.expandedPanelWidth)
+                    .frame(width: model.terminalPanelSize.width)
                     .frame(maxHeight: .infinity)
                 } else {
                     unavailableTerminal
@@ -149,7 +160,7 @@ private struct LauncherSearchView: View {
             .accessibilityIdentifier("shell.unavailable.return")
         }
         .foregroundStyle(Color.white.opacity(0.82))
-        .frame(width: LauncherStyle.expandedPanelWidth)
+        .frame(width: model.terminalPanelSize.width)
         .frame(maxHeight: .infinity)
         .background(Color.launcherSurface)
     }
